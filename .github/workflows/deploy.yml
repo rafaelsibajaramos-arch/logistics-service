@@ -1,0 +1,35 @@
+name: Deploy logistics-service
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      failure-demo:
+        description: "Provocar una prueba fallida y comprobar que Docker/deploy se bloquean"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    uses: rafaelsibajaramos-arch/pipelines/.github/workflows/microservice.yml@main
+    with:
+      service-name: logistics-service
+      test-runner: jest
+      failure-demo: ${{ github.event_name == 'workflow_dispatch' && inputs.failure-demo || false }}
+      deploy-enabled: ${{ vars.DEPLOY_ENABLED == 'true' }}
+      railway-project-id: ${{ vars.RAILWAY_PROJECT_ID }}
+      railway-environment-id: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+      railway-service-id: ${{ vars.RAILWAY_SERVICE_ID }}
+    secrets:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

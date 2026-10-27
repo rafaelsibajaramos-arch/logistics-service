@@ -1,0 +1,246 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum RouteStatus {
+  planned
+  in_transit
+  completed
+  cancelled
+}
+
+enum DeliveryStatus {
+  scheduled
+  in_transit
+  completed
+  partial
+  failed
+  cancelled
+}
+
+enum PlanStatus {
+  draft
+  confirmed
+  closed
+}
+
+enum StopType {
+  pickup
+  dropoff
+}
+
+enum OutboxStatus {
+  pending
+  published
+  failed
+}
+
+model Zone {
+  code      String   @id @db.VarChar(80)
+  name      String   @db.VarChar(120)
+  active    Boolean  @default(true)
+  routes    Route[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("zones")
+}
+
+model Driver {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @unique @db.Uuid
+  fullName      String   @db.VarChar(150)
+  phone         String   @db.VarChar(25)
+  licenseNumber String   @unique @db.VarChar(40)
+  active        Boolean  @default(true)
+  routes        Route[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("drivers")
+}
+
+model Vehicle {
+  id           String   @id @default(uuid()) @db.Uuid
+  plate        String   @unique @db.VarChar(12)
+  capacityKg   Decimal  @db.Decimal(12, 3)
+  refrigerated Boolean  @default(false)
+  active       Boolean  @default(true)
+  routes       Route[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("vehicles")
+}
+
+model Route {
+  id            String      @id @default(uuid()) @db.Uuid
+  driverId      String      @db.Uuid
+  vehicleId     String      @db.Uuid
+  zoneCode      String      @db.VarChar(80)
+  scheduledDate DateTime
+  scheduledEnd  DateTime
+  status        RouteStatus @default(planned)
+  driver        Driver      @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  vehicle       Vehicle     @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  zone          Zone        @relation(fields: [zoneCode], references: [code], onDelete: Restrict)
+  deliveries    Delivery[]
+  stops         RouteStop[]
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([driverId, scheduledDate, scheduledEnd])
+  @@index([vehicleId, scheduledDate, scheduledEnd])
+  @@index([zoneCode, scheduledDate])
+  @@map("routes")
+}
+
+model DeliveryPlan {
+  id          String     @id @default(uuid()) @db.Uuid
+  orderId     String     @unique @db.Uuid
+  buyerId     String?    @map("buyer_id") @db.Uuid
+  paymentId   String?    @db.Uuid
+  status      PlanStatus @default(draft)
+  confirmedAt DateTime?
+  closedAt    DateTime?
+  deliveries  Delivery[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@map("delivery_plans")
+}
+
+model Delivery {
+  id                  String              @id @default(uuid()) @db.Uuid
+  planId              String              @db.Uuid
+  routeId             String?             @db.Uuid
+  orderId             String              @db.Uuid
+  deliveryAddress     String              @db.Text
+  windowStart         DateTime
+  windowEnd           DateTime
+  status              DeliveryStatus      @default(scheduled)
+  requiresColdChain   Boolean             @default(false)
+  dispatchedAt        DateTime?
+  deliveredAt         DateTime?
+  closedAt            DateTime?
+  cancelledAt         DateTime?
+  plan                DeliveryPlan        @relation(fields: [planId], references: [id], onDelete: Restrict)
+  route               Route?              @relation(fields: [routeId], references: [id], onDelete: Restrict)
+  lots                DeliveryLot[]
+  stops               RouteStop[]
+  temperatureReadings TemperatureRecord[]
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  @@index([routeId, status])
+  @@index([orderId])
+  @@index([planId])
+  @@map("deliveries")
+}
+
+model DeliveryLot {
+  id                 String   @id @default(uuid()) @db.Uuid
+  deliveryId         String   @db.Uuid
+  reservationId      String   @db.Uuid
+  orderItemId        String   @db.Uuid
+  producerId         String?  @db.Uuid
+  harvestBatchId     String   @db.Uuid
+  farmId             String   @db.Uuid
+  quantityKg         Decimal  @db.Decimal(12, 3)
+  unitPrice          Decimal? @db.Decimal(12, 2)
+  acceptedQuantityKg Decimal? @db.Decimal(12, 3)
+  pickupAddress      String   @db.Text
+  pickupLatitude     Decimal  @db.Decimal(9, 6)
+  pickupLongitude    Decimal  @db.Decimal(9, 6)
+  delivery           Delivery @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([deliveryId, reservationId])
+  @@index([reservationId])
+  @@index([harvestBatchId])
+  @@index([farmId])
+  @@map("delivery_lots")
+}
+
+model RouteStop {
+  id         String    @id @default(uuid()) @db.Uuid
+  routeId    String    @db.Uuid
+  deliveryId String    @db.Uuid
+  sequence   Int
+  type       StopType
+  farmId     String?   @db.Uuid
+  address    String    @db.Text
+  plannedAt  DateTime
+  actualAt   DateTime?
+  route      Route     @relation(fields: [routeId], references: [id], onDelete: Restrict)
+  delivery   Delivery  @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([routeId, sequence])
+  @@index([deliveryId])
+  @@map("route_stops")
+}
+
+model TemperatureRecord {
+  id            String   @id @default(uuid()) @db.Uuid
+  deliveryId    String   @db.Uuid
+  temperature   Decimal  @db.Decimal(5, 2)
+  recordedAt    DateTime
+  sensorEventId String   @unique @db.VarChar(100)
+  delivery      Delivery @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
+  createdAt     DateTime @default(now())
+
+  @@index([deliveryId, recordedAt])
+  @@map("temperature_records")
+}
+
+model ProcessedOperation {
+  id          String   @id @default(uuid()) @db.Uuid
+  operationId String   @unique @db.Uuid
+  operation   String   @db.VarChar(80)
+  resourceId  String   @db.Uuid
+  createdAt   DateTime @default(now())
+
+  @@index([operation, resourceId])
+  @@map("processed_operations")
+}
+
+model ProcessedEvent {
+  eventId       String   @id @db.Uuid
+  eventType     String   @db.VarChar(120)
+  sourceService String   @db.VarChar(80)
+  entityId      String   @db.Uuid
+  processedAt   DateTime @default(now())
+
+  @@index([entityId, eventType])
+  @@map("logistics_processed_events")
+}
+
+model OutboxEvent {
+  id            String       @id @default(uuid()) @db.Uuid
+  eventType     String       @db.VarChar(120)
+  aggregateId   String       @db.Uuid
+  routingKey    String?      @db.VarChar(160)
+  sourceService String       @default("logistics-service") @db.VarChar(80)
+  entityVersion Int          @default(1)
+  schemaVersion Int          @default(1)
+  correlationId String       @db.VarChar(180)
+  occurredAt    DateTime     @default(now())
+  payload       Json
+  status        OutboxStatus @default(pending)
+  attempts      Int          @default(0)
+  availableAt   DateTime     @default(now())
+  createdAt     DateTime     @default(now())
+  publishedAt   DateTime?
+
+  @@index([status, availableAt])
+  @@map("logistics_outbox_events")
+}

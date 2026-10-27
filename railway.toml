@@ -1,0 +1,8 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+preDeployCommand = ["npm run prisma:deploy"]
+healthcheckPath = "/api/v1/health/ready"
+healthcheckTimeout = 120
