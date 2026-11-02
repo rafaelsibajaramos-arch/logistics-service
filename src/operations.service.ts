@@ -108,7 +108,7 @@ export class OperationsService {
     return { accepted: updated.count === 1, recordedAt: recorded };
   }
   async incident(id: string, dto: RouteIncidentDto, userId: string, roles: string[], operationId: string) {
-    if (!/^[0-9a-f-]{36}$/i.test(operationId)) throw new BadRequestException('La incidencia requiere operation_id');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(operationId)) throw new BadRequestException('La incidencia requiere operation_id');
     return this.db.$transaction(async tx => {
       const route = await tx.route.findUnique({ where: { id }, include: { driver: true, deliveries: { include: { plan: { select: { buyerId: true } } } } } });
       if (!route) throw new NotFoundException('Ruta no encontrada');

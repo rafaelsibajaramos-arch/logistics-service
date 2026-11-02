@@ -76,6 +76,7 @@ export class LogisticsService {
     if (!isUuid(correlationId)) correlationId = randomUUID();
     const clean = dto.deliveries.map((delivery) => ({ ...delivery, start: new Date(delivery.windowStart), end: new Date(delivery.windowEnd) }));
     for (const delivery of clean) {
+      if ((delivery.latitude == null) !== (delivery.longitude == null)) throw new BadRequestException('El destino necesita ambas coordenadas');
       if (!Number.isFinite(delivery.start.getTime()) || !Number.isFinite(delivery.end.getTime()) || delivery.end <= delivery.start) throw new BadRequestException('La ventana de entrega debe tener fin posterior al inicio');
       const reservations = delivery.lots.map((lot) => lot.reservationId);
       if (new Set(reservations).size !== reservations.length) throw new BadRequestException('Una reserva no puede repetirse en la misma entrega');
