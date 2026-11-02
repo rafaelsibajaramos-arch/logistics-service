@@ -372,7 +372,7 @@ export class LogisticsService {
       }
       if (delivery.routeId) {
         const unfinished = await tx.delivery.count({ where: { routeId: delivery.routeId, status: { notIn: [...terminalDeliveryStatuses] } } });
-        if (unfinished === 0) await tx.route.update({ where: { id: delivery.routeId }, data: { status: 'completed' } });
+        if (unfinished === 0) await tx.route.update({ where: { id: delivery.routeId }, data: { status: 'completed', lastLatitude: null, lastLongitude: null, lastAccuracy: null, lastPositionAt: null } });
       }
       return closed;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });

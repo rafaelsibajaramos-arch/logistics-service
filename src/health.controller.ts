@@ -11,6 +11,13 @@ export class HealthController {
     try { await this.prisma.$queryRaw`SELECT 1`; }
     catch { throw new ServiceUnavailableException({ status: 'not_ready', checks: { postgres: 'down', rabbitmq: this.rabbit.isConnected() ? 'up' : 'down' } }); }
     if (!this.rabbit.isConnected()) throw new ServiceUnavailableException({ status: 'not_ready', checks: { postgres: 'up', rabbitmq: 'down' } });
-    return { status: 'ready', service: 'logistics-service', checks: { postgres: 'up', rabbitmq: 'up' } };
+    let osrm = 'not_configured';
+    if (process.env.OSRM_URL) {
+      try {
+        const response = await fetch(process.env.OSRM_URL.replace(/\/$/, '') + '/nearest/v1/driving/-75.88,8.75', { signal: AbortSignal.timeout(1800) });
+        const result = await response.json(); osrm = response.ok && result.code === 'Ok' ? 'up' : 'down';
+      } catch { osrm = 'down'; }
+    }
+    return { status: 'ready', service: 'logistics-service', routingReady: osrm === 'up', checks: { postgres: 'up', rabbitmq: 'up', osrm } };
   }
 }
