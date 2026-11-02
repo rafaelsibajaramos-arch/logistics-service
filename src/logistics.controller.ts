@@ -1,8 +1,9 @@
-import { Body, Controller, ForbiddenException, Get, Headers, Param, Patch, Post, Req, UnauthorizedException } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Headers, Param, ParseUUIDPipe, Patch, Post, Req, UnauthorizedException } from '@nestjs/common';
 import { timingSafeEqual } from 'node:crypto';
 import { Request } from 'express';
-import { CloseDeliveryDto, CreateDeliveryPlanDto, CreateDriverDto, CreateRouteDto, CreateVehicleDto, CreateZoneDto, RecordTemperatureDto, SetActiveDto } from './logistics.dto';
+import { CloseDeliveryDto, ConfirmRoadRouteDto, CreateDeliveryPlanDto, CreateDriverDto, CreateRouteDto, CreateVehicleDto, CreateZoneDto, DeliveryLocationDto, PlanRoadRouteDto, RecordTemperatureDto, RouteIncidentDto, RoutePositionDto, SetActiveDto } from './logistics.dto';
 import { LogisticsService } from './logistics.service';
+import { OperationsService } from './operations.service';
 
 interface AuthenticatedRequest extends Request {
   user: { sub: string; roles: string[] };
@@ -10,10 +11,22 @@ interface AuthenticatedRequest extends Request {
 
 @Controller()
 export class LogisticsController {
-  constructor(private readonly service: LogisticsService) {}
+  constructor(private readonly service: LogisticsService, private readonly operations: OperationsService) {}
+
+  @Get('logistics/overview') overview(@Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.operations.overview(); }
+  @Patch('vehicles/:id') editVehicle(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: CreateVehicleDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.operations.updateVehicle(id, dto); }
+  @Patch('drivers/:id') editDriver(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: CreateDriverDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.operations.updateDriver(id, dto); }
+  @Patch('deliveries/:id/location') location(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: DeliveryLocationDto, @Req() req: AuthenticatedRequest) { return this.operations.locateDelivery(id, dto, req.user.sub, req.user.roles); }
+  @Get('deliveries/:id/tracking') tracking(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: AuthenticatedRequest) { return this.operations.tracking(id, req.user.sub, req.user.roles); }
+  @Post('routes/preview') preview(@Body() dto: PlanRoadRouteDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.operations.preview(dto, req.user.sub); }
+  @Post('routes/confirm') confirm(@Body() dto: ConfirmRoadRouteDto, @Req() req: AuthenticatedRequest, @Headers('x-correlation-id') correlation?: string) { this.requireAdmin(req); return this.operations.confirmProposal(dto.proposalId, req.user.sub, correlation ?? ''); }
+  @Patch('routes/:id/cancel') cancel(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.operations.cancelRoute(id, req.user.sub); }
+  @Post('routes/:id/position') position(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: RoutePositionDto, @Req() req: AuthenticatedRequest) { return this.operations.position(id, dto, req.user.sub, req.user.roles); }
+  @Post('routes/:id/incidents') incident(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: RouteIncidentDto, @Req() req: AuthenticatedRequest, @Headers('x-operation-id') operationId?: string) { return this.operations.incident(id, dto, req.user.sub, req.user.roles, operationId ?? ''); }
+  @Patch('routes/:routeId/incidents/:id/resolve') resolve(@Param('routeId', new ParseUUIDPipe()) routeId: string, @Param('id', new ParseUUIDPipe()) id: string, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.operations.resolveIncident(routeId, id, req.user.sub); }
 
   @Get('deliveries') deliveries(@Req() req: AuthenticatedRequest) { return this.service.listDeliveries(req.user.sub, req.user.roles); }
-  @Patch('deliveries/:id/confirm') confirmDelivery(@Param('id') id: string, @Body() dto: CloseDeliveryDto, @Req() req: AuthenticatedRequest, @Headers('x-operation-id') operationId?: string, @Headers('x-correlation-id') correlationId?: string) {
+  @Patch('deliveries/:id/confirm') confirmDelivery(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: CloseDeliveryDto, @Req() req: AuthenticatedRequest, @Headers('x-operation-id') operationId?: string, @Headers('x-correlation-id') correlationId?: string) {
     return this.service.closeDelivery(id, dto, req.user.sub, false, operationId ?? '', correlationId ?? '', true);
   }
 
@@ -22,10 +35,10 @@ export class LogisticsController {
   @Patch('logistics/zones/:code/active') setZoneActive(@Param('code') code: string, @Body() dto: SetActiveDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.setZoneActive(code, dto.active); }
   @Get('drivers') drivers(@Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.listDrivers(); }
   @Post('drivers') createDriver(@Body() dto: CreateDriverDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.createDriver(dto); }
-  @Patch('drivers/:id/active') setDriverActive(@Param('id') id: string, @Body() dto: SetActiveDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.setDriverActive(id, dto.active); }
+  @Patch('drivers/:id/active') setDriverActive(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: SetActiveDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.setDriverActive(id, dto.active); }
   @Get('vehicles') vehicles(@Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.listVehicles(); }
   @Post('vehicles') createVehicle(@Body() dto: CreateVehicleDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.createVehicle(dto); }
-  @Patch('vehicles/:id/active') setVehicleActive(@Param('id') id: string, @Body() dto: SetActiveDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.setVehicleActive(id, dto.active); }
+  @Patch('vehicles/:id/active') setVehicleActive(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: SetActiveDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.setVehicleActive(id, dto.active); }
 
   /** Solo el Gateway/service account puede crear el plan desde el pedido confirmado. */
   @Post('internal/logistics/plans') createPlan(@Body() dto: CreateDeliveryPlanDto, @Headers('x-internal-api-key') key: string, @Headers('x-correlation-id') correlationId?: string) {
@@ -40,21 +53,22 @@ export class LogisticsController {
   }
   @Post('routes') createRoute(@Body() dto: CreateRouteDto, @Req() req: AuthenticatedRequest, @Headers('x-correlation-id') correlationId?: string) {
     this.requireAdmin(req);
+    if (process.env.ALLOW_LEGACY_ROUTE_CREATION !== 'true') throw new ForbiddenException('Calcula y confirma una propuesta vial antes de crear la ruta');
     return this.service.createRoute(dto, correlationId ?? '');
   }
-  @Patch('routes/:id/dispatch') dispatch(@Param('id') id: string, @Req() req: AuthenticatedRequest, @Headers('x-operation-id') operationId?: string, @Headers('x-correlation-id') correlationId?: string) {
+  @Patch('routes/:id/dispatch') dispatch(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: AuthenticatedRequest, @Headers('x-operation-id') operationId?: string, @Headers('x-correlation-id') correlationId?: string) {
     if (!req.user.roles?.includes('driver') && !req.user.roles?.includes('admin') && !req.user.roles?.includes('logistics_admin')) throw new ForbiddenException('Se requiere el rol driver o logistics_admin');
     return this.service.dispatchRoute(id, req.user.sub, Boolean(req.user.roles?.includes('admin') || req.user.roles?.includes('logistics_admin')), operationId ?? '', correlationId ?? '');
   }
-  @Patch('deliveries/:id/close') closeDelivery(@Param('id') id: string, @Body() dto: CloseDeliveryDto, @Req() req: AuthenticatedRequest, @Headers('x-operation-id') operationId?: string, @Headers('x-correlation-id') correlationId?: string) {
+  @Patch('deliveries/:id/close') closeDelivery(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: CloseDeliveryDto, @Req() req: AuthenticatedRequest, @Headers('x-operation-id') operationId?: string, @Headers('x-correlation-id') correlationId?: string) {
     if (!req.user.roles?.includes('driver') && !req.user.roles?.includes('admin') && !req.user.roles?.includes('logistics_admin')) throw new ForbiddenException('Se requiere el rol driver o logistics_admin');
     return this.service.closeDelivery(id, dto, req.user.sub, req.user.roles?.includes('admin') || req.user.roles?.includes('logistics_admin') || false, operationId ?? '', correlationId ?? '');
   }
-  @Post('deliveries/:id/temperature') temperature(@Param('id') id: string, @Body() dto: RecordTemperatureDto, @Req() req: AuthenticatedRequest, @Headers('x-correlation-id') correlationId?: string) {
+  @Post('deliveries/:id/temperature') temperature(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: RecordTemperatureDto, @Req() req: AuthenticatedRequest, @Headers('x-correlation-id') correlationId?: string) {
     if (!req.user.roles?.includes('driver') && !req.user.roles?.includes('admin') && !req.user.roles?.includes('logistics_admin')) throw new ForbiddenException('Se requiere el rol driver o logistics_admin');
     return this.service.recordTemperature(id, dto, req.user.sub, Boolean(req.user.roles?.includes('admin') || req.user.roles?.includes('logistics_admin')), correlationId ?? '');
   }
-  @Patch('routes/:routeId/stops/:stopId/arrive') arriveAtStop(@Param('routeId') routeId: string, @Param('stopId') stopId: string, @Req() req: AuthenticatedRequest, @Headers('x-operation-id') operationId?: string) {
+  @Patch('routes/:routeId/stops/:stopId/arrive') arriveAtStop(@Param('routeId', new ParseUUIDPipe()) routeId: string, @Param('stopId', new ParseUUIDPipe()) stopId: string, @Req() req: AuthenticatedRequest, @Headers('x-operation-id') operationId?: string) {
     if (!req.user.roles?.includes('driver') && !req.user.roles?.includes('admin') && !req.user.roles?.includes('logistics_admin')) throw new ForbiddenException('Se requiere el rol driver o logistics_admin');
     return this.service.arriveAtStop(routeId, stopId, req.user.sub, Boolean(req.user.roles?.includes('admin') || req.user.roles?.includes('logistics_admin')), operationId ?? '');
   }

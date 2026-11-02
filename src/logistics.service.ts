@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaService } from './prisma.service';
 import { CloseDeliveryDto, CreateDeliveryPlanDto, CreateDriverDto, CreateRouteDto, CreateVehicleDto, CreateZoneDto, RecordTemperatureDto } from './logistics.dto';
 import { EventEnvelope } from './events/event-envelope';
+import { planningFingerprint, ProposalPayload } from './road-planner';
 
 const terminalDeliveryStatuses = ['completed', 'partial', 'failed', 'cancelled'] as const;
 type DeliveryWithLots = Prisma.DeliveryGetPayload<{ include: { lots: true } }>;
@@ -11,7 +12,7 @@ type DeliveryPlanWithLots = Prisma.DeliveryPlanGetPayload<{ include: { deliverie
 type RouteValidationDelivery = Pick<DeliveryWithLots, 'id' | 'windowStart' | 'windowEnd'> & {
   lots: Array<Pick<DeliveryWithLots['lots'][number], 'farmId' | 'quantityKg'>>;
 };
-const routeInclude = { driver: true, vehicle: true, zone: true, stops: { orderBy: { sequence: 'asc' as const } }, deliveries: { include: { plan: true, lots: true } } };
+const routeInclude = { driver: true, vehicle: true, zone: true, activities: { orderBy: { createdAt: 'desc' as const }, take: 100 }, stops: { orderBy: { sequence: 'asc' as const } }, deliveries: { include: { plan: true, lots: true } } };
 
 @Injectable()
 export class LogisticsService {
@@ -59,7 +60,7 @@ export class LogisticsService {
 
   listVehicles() { return this.db.vehicle.findMany({ orderBy: [{ active: 'desc' }, { plate: 'asc' }] }); }
   async createVehicle(dto: CreateVehicleDto) {
-    try { return await this.db.vehicle.create({ data: { plate: dto.plate.trim().toUpperCase(), capacityKg: new Prisma.Decimal(dto.capacityKg), refrigerated: dto.refrigerated ?? false } }); }
+    try { return await this.db.vehicle.create({ data: { plate: dto.plate.trim().toUpperCase(), capacityKg: new Prisma.Decimal(dto.capacityKg), refrigerated: dto.refrigerated ?? false, costPerKm: dto.costPerKm, kind: dto.kind ?? 'van', brand: dto.brand?.trim(), model: dto.model?.trim(), operationalStatus: dto.operationalStatus ?? 'available', insuranceUntil: dto.insuranceUntil ? new Date(dto.insuranceUntil) : undefined, inspectionUntil: dto.inspectionUntil ? new Date(dto.inspectionUntil) : undefined } }); }
     catch (error) { if (isUniqueViolation(error)) throw new ConflictException('La placa ya está registrada'); throw error; }
   }
   async setVehicleActive(id: string, active: boolean) {
@@ -112,7 +113,7 @@ export class LogisticsService {
         }
         const plan = await tx.deliveryPlan.create({ data: { orderId: dto.orderId, buyerId: dto.buyerId, paymentId: sourceEvent ? optionalUuid(sourceEvent.payload?.paymentId) : null, deliveries: { create: clean.map((delivery) => ({
           orderId: dto.orderId, deliveryAddress: delivery.deliveryAddress.trim(), windowStart: delivery.start, windowEnd: delivery.end,
-          requiresColdChain: delivery.requiresColdChain ?? false,
+          requiresColdChain: delivery.requiresColdChain ?? false, latitude: delivery.latitude, longitude: delivery.longitude, locationConfirmedAt: delivery.latitude != null && delivery.longitude != null ? new Date() : undefined,
           lots: { create: delivery.lots.map((lot) => ({ reservationId: lot.reservationId, orderItemId: lot.orderItemId, producerId: lot.producerId ?? null, harvestBatchId: lot.harvestBatchId, farmId: lot.farmId, quantityKg: new Prisma.Decimal(lot.quantityKg), unitPrice: lot.unitPrice == null ? null : new Prisma.Decimal(lot.unitPrice), pickupAddress: lot.pickupAddress.trim(), pickupLatitude: new Prisma.Decimal(lot.pickupLatitude), pickupLongitude: new Prisma.Decimal(lot.pickupLongitude) })) },
         })) } }, include: { deliveries: { include: { lots: true } } } });
         await this.enqueue(tx, { type: 'logistics.plan_created', aggregateId: plan.id, correlationId, payload: { plan_id: plan.id, order_id: plan.orderId, delivery_ids: plan.deliveries.map((delivery) => delivery.id) } });
@@ -154,7 +155,7 @@ export class LogisticsService {
     return this.db.route.findMany({ where: driverUserId ? { driver: { userId: driverUserId } } : undefined, include: routeInclude, orderBy: [{ scheduledDate: 'desc' }] });
   }
 
-  async createRoute(dto: CreateRouteDto, correlationId: string) {
+  async createRoute(dto: CreateRouteDto, correlationId: string, proposal?: { id: string; actorId: string; data: ProposalPayload }) {
     const startsAt = new Date(dto.scheduledDate); const endsAt = new Date(dto.scheduledEnd);
     if (!Number.isFinite(startsAt.getTime()) || !Number.isFinite(endsAt.getTime()) || endsAt <= startsAt) throw new BadRequestException('El fin de ruta debe ser posterior al inicio');
     if (new Set(dto.deliveryIds).size !== dto.deliveryIds.length) throw new BadRequestException('No repitas entregas en una ruta');
@@ -168,14 +169,25 @@ export class LogisticsService {
         tx.delivery.findMany({ where: { id: { in: dto.deliveryIds } }, include: { lots: true, plan: true } }),
       ]);
       if (!driver?.active) throw new ConflictException('El transportista no existe o está inactivo');
-      if (!vehicle?.active) throw new ConflictException('El vehículo no existe o está inactivo');
+      if (!vehicle?.active || (vehicle.operationalStatus && vehicle.operationalStatus !== 'available')) throw new ConflictException('El vehículo no está disponible para operar');
       if (!zone?.active) throw new ConflictException('La zona no existe o está inactiva');
       if (deliveries.length !== dto.deliveryIds.length) throw new NotFoundException('Una o más entregas no existen');
       if (deliveries.some((delivery) => delivery.routeId || delivery.status !== 'scheduled')) throw new ConflictException('Todas las entregas deben estar programadas y aún no asignadas');
       if (deliveries.some((delivery) => delivery.plan.status !== 'draft')) throw new ConflictException('No se pueden replanificar entregas de un plan confirmado');
       if (deliveries.some((delivery) => delivery.requiresColdChain) && !vehicle.refrigerated) throw new ConflictException('La ruta contiene perecederos y requiere un vehículo refrigerado');
-      const totalKg = deliveries.reduce((sum, delivery) => sum.plus(delivery.lots.reduce((subtotal, lot) => subtotal.plus(lot.quantityKg), new Prisma.Decimal(0))), new Prisma.Decimal(0));
-      if (totalKg.gt(vehicle.capacityKg)) throw new ConflictException('La carga total excede la capacidad del vehículo');
+      let load = new Prisma.Decimal(0);
+      for (const stop of stops) {
+        const d = deliveries.find(d => d.id === stop.deliveryId);
+        if (!d) throw new BadRequestException('Parada sin entrega');
+        const kg = d.lots.filter(l => stop.type === 'dropoff' || l.farmId === stop.farmId).reduce((n, l) => n.plus(l.quantityKg), new Prisma.Decimal(0));
+        load = stop.type === 'pickup' ? load.plus(kg) : load.minus(kg);
+        if (load.gt(vehicle.capacityKg)) throw new ConflictException('La carga de un tramo excede la capacidad del vehículo');
+      }
+      if (proposal) {
+        const stored = await tx.routeProposal.findUnique({ where: { id: proposal.id } });
+        if (!stored || stored.actorId !== proposal.actorId || stored.routeId || stored.expiresAt < new Date()) throw new ConflictException('La propuesta ya fue utilizada o venció. Vuelve a calcular.');
+        if (proposal.data.fingerprint !== planningFingerprint(driver, vehicle, deliveries)) throw new ConflictException('Los recursos o entregas cambiaron. Vuelve a calcular la ruta.');
+      }
       const overlap = { scheduledDate: { lt: endsAt }, scheduledEnd: { gt: startsAt }, status: { in: ['planned', 'in_transit'] as RouteStatus[] } };
       const [driverConflict, vehicleConflict] = await Promise.all([
         tx.route.findFirst({ where: { driverId: driver.id, ...overlap } }),
@@ -187,9 +199,12 @@ export class LogisticsService {
 
       const route = await tx.route.create({ data: {
         driverId: driver.id, vehicleId: vehicle.id, zoneCode: zone.code, scheduledDate: startsAt, scheduledEnd: endsAt,
+        ...(proposal ? { roadPlan: JSON.parse(JSON.stringify(proposal.data)), calculatedAt: new Date(proposal.data.calculatedAt), distanceMeters: proposal.data.distance, durationSeconds: proposal.data.duration, peakLoadKg: proposal.data.peakLoadKg, estimatedCost: proposal.data.estimatedCost } : {}),
+        ...(proposal ? { activities: { create: { actorId: proposal.actorId, operationId: randomUUID(), kind: 'access_reviewed', message: 'El planificador confirmó la revisión de restricciones de acceso del vehículo antes de asignar la ruta.' } } } : {}),
         deliveries: { connect: deliveries.map(({ id }) => ({ id })) },
-        stops: { create: stops.map((stop) => ({ deliveryId: stop.deliveryId, sequence: stop.sequence, type: stop.type, farmId: stop.farmId ?? null, address: stop.address.trim(), plannedAt: new Date(stop.plannedAt) })) },
+        stops: { create: stops.map((stop) => ({ deliveryId: stop.deliveryId, sequence: stop.sequence, type: stop.type, farmId: stop.farmId ?? null, address: stop.address.trim(), plannedAt: new Date(stop.plannedAt), latitude: stop.latitude, longitude: stop.longitude })) },
       }, include: routeInclude });
+      if (proposal) await tx.routeProposal.update({ where: { id: proposal.id }, data: { routeId: route.id } });
 
       const touchedPlans = [...new Set(deliveries.map((delivery) => delivery.planId))];
       for (const planId of touchedPlans) {
@@ -223,6 +238,8 @@ export class LogisticsService {
     if (!isAdmin && current.driver.userId !== userId) throw new ConflictException('El conductor no tiene asignada esta ruta');
     if (current.status === 'in_transit') return current;
     if (current.status !== 'planned') throw new ConflictException('Solo se puede despachar una ruta planificada');
+    if (current.vehicle && (!current.vehicle.active || current.vehicle.operationalStatus !== 'available')) throw new ConflictException('El vehículo no está disponible');
+    if (current.driver && !current.driver.active) throw new ConflictException('El conductor no está activo');
     if (current.deliveries.some((delivery) => delivery.plan.status !== 'confirmed')) throw new ConflictException('El plan debe estar confirmado antes del despacho');
     const paymentIds = [...new Set(current.deliveries.map((delivery) => delivery.plan.paymentId).filter((id): id is string => Boolean(id)))];
     if (paymentIds.length !== new Set(current.deliveries.map((delivery) => delivery.planId)).size) throw new ConflictException('Cada pedido de la ruta debe tener un pago autorizado asociado');
@@ -243,6 +260,9 @@ export class LogisticsService {
       if (!isAdmin && route.driver.userId !== userId) throw new ConflictException('El conductor no tiene asignada esta ruta');
       if (route.status === 'in_transit') return route;
       if (route.status !== 'planned') throw new ConflictException('Solo se puede despachar una ruta planificada');
+      if (route.vehicle && (!route.vehicle.active || route.vehicle.operationalStatus !== 'available')) throw new ConflictException('El vehículo no está disponible');
+      if (route.driver && !route.driver.active) throw new ConflictException('El conductor no está activo');
+      if (route.roadPlan && route.scheduledEnd <= new Date()) throw new ConflictException('La ruta planificada venció. Cancela y replanifica antes del despacho.');
       if (route.deliveries.some((delivery) => delivery.plan.status !== 'confirmed')) throw new ConflictException('El plan debe estar confirmado antes del despacho');
       const now = new Date();
       const dispatched = await tx.route.update({ where: { id: routeId }, data: { status: 'in_transit' }, include: routeInclude });
@@ -338,7 +358,7 @@ export class LogisticsService {
       const { acceptedByReservation } = validateAcceptedLots(delivery.lots, dto);
       const now = new Date();
       for (const lot of delivery.lots) await tx.deliveryLot.update({ where: { id: lot.id }, data: { acceptedQuantityKg: acceptedByReservation.get(lot.reservationId)! } });
-      const closed = await tx.delivery.update({ where: { id: delivery.id }, data: { status: dto.status, deliveredAt: dto.status === 'failed' ? null : now, closedAt: now }, include: { lots: true, plan: true } });
+      const closed = await tx.delivery.update({ where: { id: delivery.id }, data: { status: dto.status, ...(buyerConfirmation ? { receivedByName: dto.receivedByName?.trim(), receiptNotes: dto.receiptNotes?.trim() } : {}), deliveredAt: dto.status === 'failed' ? null : now, closedAt: now }, include: { lots: true, plan: true } });
       await tx.processedOperation.create({ data: { operationId: operation, operation: 'delivery.close', resourceId: deliveryId } });
       const eventItems = closed.lots.map((lot) => ({ order_item_id: lot.orderItemId, producer_id: lot.producerId, reservation_id: lot.reservationId, harvest_batch_id: lot.harvestBatchId, farm_id: lot.farmId, quantity_kg: lot.quantityKg.toString(), accepted_quantity_kg: (lot.acceptedQuantityKg ?? new Prisma.Decimal(0)).toString() }));
       await this.enqueue(tx, { type: `delivery.${dto.status}`, aggregateId: delivery.id, correlationId, payload: { delivery_id: delivery.id, plan_id: delivery.planId, order_id: delivery.orderId, buyer_id: delivery.plan.buyerId, confirmed_by: userId, buyer_confirmation: buyerConfirmation, reason: dto.reason ?? null, driver_user_id: delivery.route?.driver.userId ?? null, status: dto.status, window_start: delivery.windowStart.toISOString(), window_end: delivery.windowEnd.toISOString(), dispatched_at: delivery.dispatchedAt?.toISOString() ?? null, delivered_at: closed.deliveredAt?.toISOString() ?? null, closed_at: now.toISOString(), items: eventItems } });
@@ -501,6 +521,9 @@ export function buildOrderDeliveryPlan(event: EventEnvelope, now = new Date()): 
   const startDays = boundedDays(process.env.DELIVERY_WINDOW_START_DAYS, 1);
   const endDays = Math.max(startDays + 1, boundedDays(process.env.DELIVERY_WINDOW_END_DAYS, 7));
   const buyerId = asUuid(payload.buyerId ?? payload.buyer_id, 'buyerId');
-  return { orderId, buyerId, deliveries: [{ deliveryAddress, windowStart: new Date(anchor.getTime() + startDays * 86_400_000).toISOString(), windowEnd: new Date(anchor.getTime() + endDays * 86_400_000).toISOString(), lots }] };
+  const latitude = payload.deliveryLatitude == null ? undefined : coordinate(payload.deliveryLatitude, -90, 90, 'deliveryLatitude');
+  const longitude = payload.deliveryLongitude == null ? undefined : coordinate(payload.deliveryLongitude, -180, 180, 'deliveryLongitude');
+  if ((latitude == null) !== (longitude == null)) throw new BadRequestException('El destino necesita ambas coordenadas');
+  return { orderId, buyerId, deliveries: [{ deliveryAddress, latitude, longitude, windowStart: new Date(anchor.getTime() + startDays * 86_400_000).toISOString(), windowEnd: new Date(anchor.getTime() + endDays * 86_400_000).toISOString(), lots }] };
 }
 function parseOperation(value: string) { if (!isUuid(value)) throw new BadRequestException('operation_id debe ser un UUID'); return value; }

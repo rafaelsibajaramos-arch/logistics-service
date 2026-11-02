@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsOptional, IsString, IsUUID, Length, Max, Min, ValidateNested } from 'class-validator';
+import { ArrayMinSize, ArrayMaxSize, Equals, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsOptional, IsString, IsUUID, Length, Max, Min, ValidateNested } from 'class-validator';
 
 export class CreateZoneDto {
   @IsString() @Length(2, 80) code!: string;
@@ -21,6 +21,46 @@ export class CreateVehicleDto {
   @IsString() @Length(3, 12) plate!: string;
   @Type(() => Number) @IsNumber({ maxDecimalPlaces: 3 }) @Min(0.001) capacityKg!: number;
   @IsOptional() @IsBoolean() refrigerated?: boolean;
+  @IsOptional() @IsIn(['van', 'truck', 'pickup', 'motorcycle']) kind?: string;
+  @IsOptional() @IsString() @Length(0, 80) brand?: string;
+  @IsOptional() @IsString() @Length(0, 80) model?: string;
+  @IsOptional() @IsIn(['available', 'maintenance', 'out_of_service']) operationalStatus?: string;
+  @IsOptional() @IsDateString() insuranceUntil?: string;
+  @IsOptional() @IsDateString() inspectionUntil?: string;
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) costPerKm?: number;
+}
+
+export class DeliveryLocationDto {
+  @IsNumber() @Min(-90) @Max(90) latitude!: number;
+  @IsNumber() @Min(-180) @Max(180) longitude!: number;
+  @IsString() @Length(2, 80) zoneCode!: string;
+  @IsOptional() @IsBoolean() requiresColdChain?: boolean;
+}
+export class PlanRoadRouteDto {
+  @IsUUID() driverId!: string;
+  @IsUUID() vehicleId!: string;
+  @IsString() @Length(2, 80) zoneCode!: string;
+  @IsDateString() scheduledDate!: string;
+  @IsDateString() scheduledEnd!: string;
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(10) @IsUUID(undefined, { each: true }) deliveryIds!: string[];
+  @IsNumber() @Min(-90) @Max(90) originLatitude!: number;
+  @IsNumber() @Min(-180) @Max(180) originLongitude!: number;
+  @IsOptional() @IsNumber() @Min(1) @Max(120) serviceMinutes?: number;
+}
+export class ConfirmRoadRouteDto {
+  @IsUUID() proposalId!: string;
+  @Equals(true) roadRestrictionsReviewed!: boolean;
+}
+export class RoutePositionDto {
+  @IsNumber() @Min(-90) @Max(90) latitude!: number;
+  @IsNumber() @Min(-180) @Max(180) longitude!: number;
+  @IsNumber() @Min(0) @Max(5000) accuracy!: number;
+  @IsDateString() recordedAt!: string;
+}
+export class RouteIncidentDto {
+  @IsIn(['delay', 'damage', 'absence', 'breakdown', 'cold_chain', 'other']) kind!: string;
+  @IsString() @Length(5, 1000) message!: string;
+  @IsOptional() @IsUUID() deliveryId?: string;
 }
 
 export class DeliveryLotDto {
@@ -38,6 +78,8 @@ export class DeliveryLotDto {
 
 export class DeliveryPlanItemDto {
   @IsString() @Length(3, 500) deliveryAddress!: string;
+  @IsOptional() @IsNumber() @Min(-90) @Max(90) latitude?: number;
+  @IsOptional() @IsNumber() @Min(-180) @Max(180) longitude?: number;
   @IsDateString() windowStart!: string;
   @IsDateString() windowEnd!: string;
   @IsOptional() @IsBoolean() requiresColdChain?: boolean;
@@ -57,6 +99,8 @@ export class RouteStopDto {
   @IsOptional() @IsUUID() farmId?: string;
   @IsString() @Length(3, 500) address!: string;
   @IsDateString() plannedAt!: string;
+  @IsOptional() @IsNumber() @Min(-90) @Max(90) latitude?: number;
+  @IsOptional() @IsNumber() @Min(-180) @Max(180) longitude?: number;
 }
 
 export class CreateRouteDto {
@@ -75,6 +119,8 @@ export class AcceptedLotDto {
 }
 
 export class CloseDeliveryDto {
+  @IsOptional() @IsString() @Length(2, 150) receivedByName?: string;
+  @IsOptional() @IsString() @Length(0, 1000) receiptNotes?: string;
   @IsOptional() @IsString() @Length(5, 500) reason?: string;
   @IsIn(['completed', 'partial', 'failed']) status!: 'completed' | 'partial' | 'failed';
   @IsArray() @ValidateNested({ each: true }) @Type(() => AcceptedLotDto) acceptedLots!: AcceptedLotDto[];
