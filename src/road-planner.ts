@@ -54,8 +54,9 @@ export function scheduleStops(stops: RoadStop[], order: number[], legs: RoadLeg[
 }
 
 export class OsrmClient {
+  constructor(private readonly profile: 'driving' | 'bicycle' = 'driving') {}
   private endpoint() {
-    const endpoint = process.env.OSRM_URL;
+    const endpoint = this.profile === 'bicycle' ? process.env.OSRM_BICYCLE_URL : process.env.OSRM_URL;
     if (!endpoint) throw new ServiceUnavailableException('Falta conectar el motor de rutas OSRM. Configura OSRM_URL en logística.');
     const url = new URL(endpoint);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new ServiceUnavailableException('La configuración de OSRM no es válida');
@@ -64,13 +65,14 @@ export class OsrmClient {
   private async request(service: string, points: Point[], options: string) {
     const coordinates = points.map(p => `${p.longitude.toFixed(6)},${p.latitude.toFixed(6)}`).join(';');
     try {
-      const response = await fetch(`${this.endpoint()}/${service}/v1/driving/${coordinates}?${options}&radiuses=${points.map(() => '500').join(';')}`, { signal: AbortSignal.timeout(10000) });
+      const response = await fetch(`${this.endpoint()}/${service}/v1/${this.profile}/${coordinates}?${options}&radiuses=${points.map(() => '200').join(';')}`, { signal: AbortSignal.timeout(10000) });
       if (!response.ok) {
         const failure = await response.json().catch(() => ({})) as { code?: string; message?: string };
         if (failure.code === 'NoSegment') throw new ConflictException('Un punto de recogida, entrega o salida no coincide con una carretera transitable. Confirma su ubicación exacta en el mapa.');
         throw new Error('OSRM HTTP');
       }
       const data = await response.json();
+      if (data.code === 'NoSegment' || data.code === 'NoRoute' || data.code === 'NoTable') throw new ConflictException('No existe un recorrido transitable entre los puntos seleccionados. Revisa las ubicaciones o divide las entregas.');
       if (data.code !== 'Ok') throw new Error('OSRM result');
       return data;
     } catch (error) {
@@ -79,11 +81,11 @@ export class OsrmClient {
     }
   }
   async verifyRoadPoint(point: Point) {
-    const url = `${this.endpoint()}/nearest/v1/driving/${point.longitude.toFixed(6)},${point.latitude.toFixed(6)}?number=1&radiuses=500`;
+    const url = `${this.endpoint()}/nearest/v1/${this.profile}/${point.longitude.toFixed(6)},${point.latitude.toFixed(6)}?number=1&radiuses=200`;
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
       const data = await response.json() as { code?: string; waypoints?: { distance?: number }[] };
-      if (data.code !== 'Ok' || !Number.isFinite(data.waypoints?.[0]?.distance) || Number(data.waypoints?.[0]?.distance) > 500) throw new ConflictException('El punto está a más de 500 m de una vía transitable. Ajusta el marcador a la entrada por carretera.');
+      if (data.code !== 'Ok' || !Number.isFinite(data.waypoints?.[0]?.distance) || Number(data.waypoints?.[0]?.distance) > 200) throw new ConflictException('El punto está a más de 200 m de una vía transitable. Ajusta el marcador a la entrada por carretera.');
     } catch (error) {
       if (error instanceof ConflictException) throw error;
       throw new ServiceUnavailableException('No se pudo verificar el acceso vial de la recogida. Reintenta.');
@@ -91,12 +93,14 @@ export class OsrmClient {
   }
   async matrix(points: Point[]): Promise<(number | null)[][]> {
     const data = await this.request('table', points, 'annotations=duration');
+    if ([...(data.sources ?? []), ...(data.destinations ?? [])].some((p: { distance?: number }) => !Number.isFinite(p?.distance) || Number(p.distance) > 200)) throw new ConflictException('Un punto de salida, recogida o entrega está lejos de la carretera. Confirma su ubicación exacta.');
     if (!Array.isArray(data.durations) || data.durations.length !== points.length || data.durations.some((r: unknown[]) => !Array.isArray(r) || r.length !== points.length)) throw new ServiceUnavailableException('Matriz de viajes incompleta');
     return data.durations;
   }
   async route(points: Point[]): Promise<{ geometry: RoadGeometry; legs: RoadLeg[]; distance: number; duration: number }> {
     const data = await this.request('route', points, 'overview=full&geometries=geojson&steps=false');
     const route = data.routes?.[0];
+    if (data.waypoints?.some((p: { distance?: number }) => !Number.isFinite(p?.distance) || Number(p.distance) > 200)) throw new ConflictException('Un punto del recorrido está lejos de la carretera. Confirma su ubicación exacta.');
     if (!route || route.geometry?.type !== 'LineString' || !Array.isArray(route.geometry.coordinates) || !Array.isArray(route.legs)) throw new ServiceUnavailableException('Recorrido vial incompleto');
     return route;
   }

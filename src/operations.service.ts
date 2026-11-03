@@ -7,7 +7,7 @@ import { OsrmClient, planningFingerprint, ProposalPayload, RoadStop, scheduleSto
 import { LogisticsAccessService } from './logistics-access.service';
 import { simulationElapsed, simulationProgress, SimulationTimeline } from './simulation-engine';
 import { meters } from './simulation-engine';
-import { cityKey } from './fleet-location';
+import { bicycleNeedsProfile, cityKey, roadLimitKm, tripWithinVehicleRange } from './fleet-location';
 
 const activeStatuses = ['planned', 'in_transit'] as const;
 const admin = (roles: string[]) => roles.some(r => ['admin', 'logistics_admin'].includes(r));
@@ -83,11 +83,19 @@ export class OperationsService {
     ]);
     if (!drivers.length || !fleet.length) throw new ConflictException('No hay repartidores simulados o vehículos compatibles. Revisa la flota o divide la carga');
     const pickup = { pickupLatitude: deliveries[0].dispatchLatitude ?? deliveries[0].lots[0].pickupLatitude, pickupLongitude: deliveries[0].dispatchLongitude ?? deliveries[0].lots[0].pickupLongitude };
-    const candidates = fleet.filter(v => v.baseAddress?.trim() && v.baseLatitude != null && v.baseLongitude != null && cityKey(v.baseCity, v.baseDepartment) && drivers.some(d => cityKey(d.baseCity, d.baseDepartment) === cityKey(v.baseCity, v.baseDepartment))).sort((a,b) => {
+    const candidates = fleet.filter(v => {
+      if (!v.baseAddress?.trim() || v.baseLatitude == null || v.baseLongitude == null || !cityKey(v.baseCity, v.baseDepartment)) return false;
+      if (!drivers.some(d => cityKey(d.baseCity, d.baseDepartment) === cityKey(v.baseCity, v.baseDepartment))) return false;
+      if (bicycleNeedsProfile(v.kind) && !process.env.OSRM_BICYCLE_URL) return false;
+      return deliveries.every(d => d.lots.every(l => {
+        const from = [Number(d.dispatchLongitude ?? l.pickupLongitude), Number(d.dispatchLatitude ?? l.pickupLatitude)] as [number, number];
+        return tripWithinVehicleRange(v.kind, [Number(v.baseLongitude), Number(v.baseLatitude)], from, [Number(d.longitude), Number(d.latitude)]);
+      }));
+    }).sort((a,b) => {
       const distance = (v: typeof a) => meters([Number(v.baseLongitude), Number(v.baseLatitude)], [Number(pickup.pickupLongitude), Number(pickup.pickupLatitude)]);
       return Math.floor(distance(a) / 1000) - Math.floor(distance(b) / 1000) || Number(Number(a.capacityKg) < total) - Number(Number(b.capacityKg) < total) || Number(a.capacityKg) - Number(b.capacityKg);
     });
-    if (!candidates.length) throw new ConflictException('Administración debe registrar ciudad, departamento y base de los vehículos, y un repartidor de esa misma ciudad');
+    if (!candidates.length) throw new ConflictException('No hay un vehículo adecuado para la distancia y el lugar de recogida. Una bicicleta solo puede cubrir recorridos locales. Revisa la flota o divide las entregas.');
     const commonZone = deliveries.every(d => d.zoneCode && d.zoneCode === deliveries[0].zoneCode) ? deliveries[0].zoneCode : null;
     const existingZone = commonZone ? await this.db.zone.findUnique({ where: { code: commonZone } }) : null;
     const zone = existingZone?.active ? existingZone : await this.db.zone.upsert({ where: { code: 'AUTO' }, create: { code: 'AUTO', name: 'Distribución automática' }, update: {} });
@@ -104,7 +112,7 @@ export class OperationsService {
       const ends = new Date(Math.min(starts.getTime() + 12 * 3600000, ...deliveries.map(d => d.windowEnd.getTime())));
       if (ends <= starts) { reason = 'La ventana de entrega venció o no permite tiempo para recoger'; continue; }
       if (bookings.some(b => (b.vehicleId === vehicle.id || b.driverId === driver.id) && (b.scheduledDate < ends && b.scheduledEnd > starts || b.status === 'in_transit' && b.scheduledEnd <= new Date()))) continue;
-      if (++attempts > 6) throw new ConflictException(reason + '. Divide las entregas o usa la planificación avanzada');
+      if (++attempts > 18) throw new ConflictException(reason + '. Divide las entregas o usa la planificación avanzada');
       try {
         const proposal = await this.preview({ driverId: driver.id, vehicleId: vehicle.id, zoneCode: zone.code, scheduledDate: starts.toISOString(), scheduledEnd: ends.toISOString(), deliveryIds: ids, originLatitude: Number(vehicle.baseLatitude), originLongitude: Number(vehicle.baseLongitude), serviceMinutes: 2 }, actorId, roles);
         return { ...proposal, automatic: true, selection: { driver: driver.fullName, vehicle: vehicle.plate, kind: vehicle.kind, capacityKg: vehicle.capacityKg, totalKg: total, zone: zone.name, baseCity: vehicle.baseCity, baseDepartment: vehicle.baseDepartment, originAddress: vehicle.baseAddress, approachKm: Math.round(meters([Number(vehicle.baseLongitude), Number(vehicle.baseLatitude)], [Number(pickup.pickupLongitude), Number(pickup.pickupLatitude)]) / 100) / 10 } };
@@ -134,6 +142,9 @@ export class OperationsService {
     ]);
     if (!vehicle?.active || vehicle.operationalStatus !== 'available') throw new ConflictException('El vehículo está inactivo, en mantenimiento o fuera de servicio');
     if (!driver?.active || !zone?.active) throw new ConflictException('Selecciona un conductor y una zona activos');
+    if (!cityKey(driver.baseCity, driver.baseDepartment) || cityKey(driver.baseCity, driver.baseDepartment) !== cityKey(vehicle.baseCity, vehicle.baseDepartment)) throw new ConflictException('El conductor y el vehículo deben estar asignados a la misma ciudad base');
+    if (vehicle.baseLatitude == null || vehicle.baseLongitude == null || meters([Number(vehicle.baseLongitude), Number(vehicle.baseLatitude)], [dto.originLongitude, dto.originLatitude]) > 250) throw new ConflictException('La ruta debe salir de la base registrada del vehículo');
+    if (bicycleNeedsProfile(vehicle.kind) && !process.env.OSRM_BICYCLE_URL) throw new ConflictException('Las bicicletas requieren un motor de rutas aptas para bicicleta antes de asignarlas');
     if (starts.getTime() < Date.now() + (driver.preparationMinutes ?? 15) * 60000) throw new ConflictException(`El conductor necesita al menos ${driver.preparationMinutes ?? 15} minutos para preparar la recogida`);
     if (conflicts.length) throw new ConflictException('El vehículo o conductor tiene otra ruta en ese horario');
     if (deliveries.length !== dto.deliveryIds.length || deliveries.some(d => d.status !== 'scheduled' || d.routeId || d.plan.status !== 'draft')) throw new ConflictException('Una entrega ya no está disponible para planificar');
@@ -150,11 +161,13 @@ export class OperationsService {
     }
     if (stops.length > 25) throw new BadRequestException('Divide el trabajo en rutas de hasta 25 paradas');
     const origin = { latitude: dto.originLatitude, longitude: dto.originLongitude };
-    const engine = new OsrmClient();
+    if (deliveries.some(d => stops.filter(s => s.deliveryId === d.id && s.type === 'pickup').some(p => !tripWithinVehicleRange(vehicle.kind, [origin.longitude, origin.latitude], [p.longitude, p.latitude], [Number(d.longitude), Number(d.latitude)])))) throw new ConflictException('El trayecto es demasiado largo para este tipo de vehículo. Selecciona uno adecuado para la distancia.');
+    const engine = new OsrmClient(bicycleNeedsProfile(vehicle.kind) ? 'bicycle' : 'driving');
     const matrix = await engine.matrix([origin, ...stops]);
     const serviceMinutes = dto.serviceMinutes ?? 10;
     const sequence = sequenceStops(stops, matrix, starts.getTime(), ends.getTime(), Number(vehicle.capacityKg), serviceMinutes * 60);
     const road = await engine.route([origin, ...sequence.order.map(i => stops[i])]);
+    if (road.distance > roadLimitKm(vehicle.kind) * 1000) throw new ConflictException('El recorrido supera la distancia permitida para este tipo de vehículo. Elige otro transporte o divide las entregas.');
     const schedule = scheduleStops(stops, sequence.order, road.legs, starts.getTime(), ends.getTime(), Number(vehicle.capacityKg), serviceMinutes * 60);
     if (schedule.peakLoadKg < Number(vehicle.minimumLoadKg ?? 0)) throw new ConflictException('La carga de esta ruta es inferior al mínimo admitido por el vehículo');
     // Avoid formally feasible but unreasonable pooling detours. Compare each
@@ -293,7 +306,7 @@ export class OperationsService {
       this.db.driver.findMany({ where: { active: true }, select: { id: true, fullName: true, phone: true, active: true, simulated: true, preparationMinutes: true, baseCity: true, baseDepartment: true } }),
       this.db.route.findMany({ where: { status: { in: ['planned', 'in_transit'] } }, select: { driverId: true, vehicleId: true, scheduledDate: true, scheduledEnd: true, status: true } }),
     ]);
-    return { vehicles, drivers, reservations };
+    return { vehicles, drivers, reservations, bicycleRoutingAvailable: Boolean(process.env.OSRM_BICYCLE_URL) };
   }
   async overview() {
     const now = new Date(), cutoff = new Date(Date.now() - 30 * 86400000);

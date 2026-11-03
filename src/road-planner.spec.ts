@@ -43,10 +43,22 @@ describe('Planificación vial y restricciones de negocio', () => {
     try { await expect(new OsrmClient().matrix([pickup('a', 4)])).rejects.toThrow('no coincide con una carretera'); }
     finally { mock.mockRestore(); if (previous) process.env.OSRM_URL = previous; else delete process.env.OSRM_URL; }
   });
+  it('rechaza una conexión vial inexistente sin crear una ruta', async () => {
+    const previous = process.env.OSRM_URL; process.env.OSRM_URL = 'http://osrm.test';
+    const mock = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ code: 'NoRoute' }) } as Response);
+    try { await expect(new OsrmClient().route([pickup('a', 4)])).rejects.toThrow('No existe un recorrido transitable'); }
+    finally { mock.mockRestore(); if (previous) process.env.OSRM_URL = previous; else delete process.env.OSRM_URL; }
+  });
   it('rechaza una salida de mercancía que OSRM ubica lejos de una vía', async () => {
     const previous = process.env.OSRM_URL; process.env.OSRM_URL = 'http://osrm.test';
     const mock = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ code: 'Ok', waypoints: [{ distance: 501 }] }) } as Response);
-    try { await expect(new OsrmClient().verifyRoadPoint(pickup('a', 4))).rejects.toThrow('más de 500 m'); }
+    try { await expect(new OsrmClient().verifyRoadPoint(pickup('a', 4))).rejects.toThrow('más de 200 m'); }
+    finally { mock.mockRestore(); if (previous) process.env.OSRM_URL = previous; else delete process.env.OSRM_URL; }
+  });
+  it('rechaza puntos que la matriz ajustaría demasiado lejos de la vía', async () => {
+    const previous = process.env.OSRM_URL; process.env.OSRM_URL = 'http://osrm.test';
+    const mock = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ code: 'Ok', durations: [[0]], sources: [{ distance: 250 }], destinations: [{ distance: 250 }] }) } as Response);
+    try { await expect(new OsrmClient().matrix([pickup('a', 4)])).rejects.toThrow('lejos de la carretera'); }
     finally { mock.mockRestore(); if (previous) process.env.OSRM_URL = previous; else delete process.env.OSRM_URL; }
   });
 });
