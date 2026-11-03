@@ -20,6 +20,7 @@ export class SimulationService implements OnModuleInit, OnModuleDestroy {
     const route = await this.db.route.findUniqueOrThrow({ where: { id: routeId }, include: { driver: true, stops: { orderBy: { sequence: 'asc' } }, simulation: true } });
     if (!route.driver.simulated) throw new ConflictException('Asigna un repartidor marcado como simulado para iniciar este recorrido');
     if (!['planned', 'in_transit'].includes(route.status)) throw new ConflictException('La ruta ya está cerrada');
+    if (route.status === 'planned' && dto.action !== 'start') throw new ConflictException('Inicia el despacho antes de reanudar o cambiar el recorrido');
     if (route.simulation?.status === 'completed') throw new ConflictException('El recorrido simulado ya terminó');
     if (!route.simulation) {
       if (dto.action !== 'start' || route.status !== 'planned' || route.stops.some(s => s.actualAt)) throw new ConflictException('Inicia una ruta nueva para simular');
