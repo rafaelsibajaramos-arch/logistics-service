@@ -11,6 +11,8 @@ export class SetActiveDto {
 }
 
 export class CreateDriverDto {
+  @IsString() @Length(2, 80) baseCity?: string;
+  @IsString() @Length(2, 80) baseDepartment?: string;
   @IsOptional() @IsUUID() userId?: string;
   @IsOptional() @IsBoolean() simulated?: boolean;
   @IsOptional() @IsNumber({ maxDecimalPlaces: 0 }) @Min(0) @Max(120) preparationMinutes?: number;
@@ -18,8 +20,16 @@ export class CreateDriverDto {
   @IsString() @Length(5, 25) phone!: string;
   @IsString() @Length(3, 40) licenseNumber!: string;
 }
+export class AutoPlanRouteDto {
+  @IsArray() @ArrayMinSize(1) @IsUUID(undefined, { each: true }) deliveryIds!: string[];
+}
 
 export class CreateVehicleDto {
+  @IsString() @Length(2, 80) baseCity?: string;
+  @IsString() @Length(2, 80) baseDepartment?: string;
+  @IsString() @Length(3, 500) baseAddress?: string;
+  @IsNumber() @Min(-90) @Max(90) baseLatitude?: number;
+  @IsNumber() @Min(-180) @Max(180) baseLongitude?: number;
   @IsString() @Length(3, 12) plate!: string;
   @Type(() => Number) @IsNumber({ maxDecimalPlaces: 3 }) @Min(0.001) capacityKg!: number;
   @IsOptional() @IsNumber({ maxDecimalPlaces: 3 }) @Min(0) minimumLoadKg?: number;

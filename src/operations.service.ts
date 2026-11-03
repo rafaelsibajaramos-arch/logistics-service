@@ -6,6 +6,8 @@ import { CreateDriverDto, CreateVehicleDto, DeliveryLocationDto, PlanRoadRouteDt
 import { OsrmClient, planningFingerprint, ProposalPayload, RoadStop, scheduleStops, sequenceStops } from './road-planner';
 import { LogisticsAccessService } from './logistics-access.service';
 import { simulationElapsed, simulationProgress, SimulationTimeline } from './simulation-engine';
+import { meters } from './simulation-engine';
+import { cityKey } from './fleet-location';
 
 const activeStatuses = ['planned', 'in_transit'] as const;
 const admin = (roles: string[]) => roles.some(r => ['admin', 'logistics_admin'].includes(r));
@@ -51,6 +53,51 @@ export class OperationsService {
       if (!zone?.active) throw new BadRequestException('Selecciona una zona activa');
       return tx.delivery.update({ where: { id }, data: { latitude: dto.latitude, longitude: dto.longitude, zoneCode: zone.code, requiresColdChain: dto.requiresColdChain ?? delivery.requiresColdChain, locationConfirmedAt: new Date(), ...(dto.pickupReadyAt ? { pickupReadyAt: new Date(dto.pickupReadyAt) } : {}), ...(dto.pickupDeadlineAt ? { pickupDeadlineAt: new Date(dto.pickupDeadlineAt) } : {}) } });
     }, { isolationLevel: 'Serializable' });
+  }
+
+  async autoPlan(ids: string[], actorId: string, roles: string[]) {
+    if (!ids.length || ids.length > 12 || new Set(ids).size !== ids.length) throw new BadRequestException('Selecciona entre 1 y 12 entregas distintas');
+    await this.access.manageDeliveries(ids, actorId, roles);
+    const deliveries = await this.db.delivery.findMany({ where: { id: { in: ids } }, include: { lots: true } });
+    if (deliveries.length !== ids.length || deliveries.some(d => d.status !== 'scheduled' || d.routeId)) throw new ConflictException('Una entrega ya está asignada o cerrada. Actualiza la lista');
+    if (deliveries.some(d => d.latitude == null || d.longitude == null || d.lots.some(l => l.pickupLatitude == null || l.pickupLongitude == null))) throw new ConflictException('Confirma la dirección en el mapa del comprador y la ubicación de las fincas antes de asignar');
+    const total = deliveries.reduce((n,d) => n + d.lots.reduce((sum,l) => sum + Number(l.quantityKg), 0), 0);
+    const largest = Math.max(...deliveries.map(d => d.lots.reduce((n,l) => n + Number(l.quantityKg), 0)));
+    const cold = deliveries.some(d => d.requiresColdChain);
+    const [drivers, fleet] = await Promise.all([
+      this.db.driver.findMany({ where: { active: true, simulated: true, baseCity: { not: null }, baseDepartment: { not: null } }, orderBy: [{ preparationMinutes: 'asc' }, { fullName: 'asc' }] }),
+      this.db.vehicle.findMany({ where: { active: true, operationalStatus: 'available', capacityKg: { gte: largest }, minimumLoadKg: { lte: total }, ...(cold ? { refrigerated: true } : {}) }, orderBy: { capacityKg: 'asc' } }),
+    ]);
+    if (!drivers.length || !fleet.length) throw new ConflictException('No hay repartidores simulados o vehículos compatibles. Revisa la flota o divide la carga');
+    const pickup = deliveries[0].lots[0];
+    const candidates = fleet.filter(v => v.baseAddress?.trim() && v.baseLatitude != null && v.baseLongitude != null && cityKey(v.baseCity, v.baseDepartment) && drivers.some(d => cityKey(d.baseCity, d.baseDepartment) === cityKey(v.baseCity, v.baseDepartment))).sort((a,b) => {
+      const distance = (v: typeof a) => meters([Number(v.baseLongitude), Number(v.baseLatitude)], [Number(pickup.pickupLongitude), Number(pickup.pickupLatitude)]);
+      return Math.floor(distance(a) / 1000) - Math.floor(distance(b) / 1000) || Number(Number(a.capacityKg) < total) - Number(Number(b.capacityKg) < total) || Number(a.capacityKg) - Number(b.capacityKg);
+    });
+    if (!candidates.length) throw new ConflictException('Administración debe registrar ciudad, departamento y base de los vehículos, y un repartidor de esa misma ciudad');
+    const commonZone = deliveries.every(d => d.zoneCode && d.zoneCode === deliveries[0].zoneCode) ? deliveries[0].zoneCode : null;
+    const existingZone = commonZone ? await this.db.zone.findUnique({ where: { code: commonZone } }) : null;
+    const zone = existingZone?.active ? existingZone : await this.db.zone.upsert({ where: { code: 'AUTO' }, create: { code: 'AUTO', name: 'Distribución automática' }, update: {} });
+    if (!zone.active) throw new ConflictException('Administración deshabilitó la distribución automática');
+    await this.db.$transaction(async tx => {
+      const updated = await tx.delivery.updateMany({ where: { id: { in: ids }, routeId: null, status: 'scheduled' }, data: { zoneCode: zone.code, locationConfirmedAt: new Date() } });
+      if (updated.count !== ids.length) throw new ConflictException('Las entregas cambiaron. Vuelve a calcular');
+    }, { isolationLevel: 'Serializable' });
+    const bookings = await this.db.route.findMany({ where: { status: { in: ['planned', 'in_transit'] } }, select: { driverId: true, vehicleId: true, scheduledDate: true, scheduledEnd: true, status: true } });
+    let attempts = 0, reason = 'No hay un horario compatible para agrupar estas entregas';
+    for (const vehicle of candidates) for (const driver of drivers) {
+      if (cityKey(driver.baseCity, driver.baseDepartment) !== cityKey(vehicle.baseCity, vehicle.baseDepartment)) continue;
+      const starts = new Date(Math.max(Date.now() + (driver.preparationMinutes + 2) * 60000, Math.min(...deliveries.map(d => d.windowStart.getTime())), ...deliveries.map(d => d.pickupReadyAt?.getTime() ?? 0)));
+      const ends = new Date(Math.min(starts.getTime() + 12 * 3600000, ...deliveries.map(d => d.windowEnd.getTime())));
+      if (ends <= starts) { reason = 'La ventana de entrega venció o no permite tiempo para recoger'; continue; }
+      if (bookings.some(b => (b.vehicleId === vehicle.id || b.driverId === driver.id) && (b.scheduledDate < ends && b.scheduledEnd > starts || b.status === 'in_transit' && b.scheduledEnd <= new Date()))) continue;
+      if (++attempts > 6) throw new ConflictException(reason + '. Divide las entregas o usa la planificación avanzada');
+      try {
+        const proposal = await this.preview({ driverId: driver.id, vehicleId: vehicle.id, zoneCode: zone.code, scheduledDate: starts.toISOString(), scheduledEnd: ends.toISOString(), deliveryIds: ids, originLatitude: Number(vehicle.baseLatitude), originLongitude: Number(vehicle.baseLongitude), serviceMinutes: 2 }, actorId, roles);
+        return { ...proposal, automatic: true, selection: { driver: driver.fullName, vehicle: vehicle.plate, kind: vehicle.kind, capacityKg: vehicle.capacityKg, totalKg: total, zone: zone.name, baseCity: vehicle.baseCity, baseDepartment: vehicle.baseDepartment, originAddress: vehicle.baseAddress, approachKm: Math.round(meters([Number(vehicle.baseLongitude), Number(vehicle.baseLatitude)], [Number(pickup.pickupLongitude), Number(pickup.pickupLatitude)]) / 100) / 10 } };
+      } catch (e) { if (!(e instanceof ConflictException || e instanceof BadRequestException)) throw e; reason = e.message; }
+    }
+    throw new ConflictException(reason + '. No se asignó ninguna ruta; divide las entregas o usa la planificación avanzada');
   }
 
   async preview(dto: PlanRoadRouteDto, actorId: string, roles: string[] = ['admin']) {
@@ -225,7 +272,7 @@ export class OperationsService {
     if (!admin(roles) && !await this.access.producerId(userId, roles)) throw new ForbiddenException('Solo administración o productores habilitados');
     const [vehicles, drivers, reservations] = await Promise.all([
       this.db.vehicle.findMany({ where: { active: true, operationalStatus: 'available' }, orderBy: { capacityKg: 'asc' } }),
-      this.db.driver.findMany({ where: { active: true }, select: { id: true, fullName: true, phone: true, active: true, simulated: true, preparationMinutes: true } }),
+      this.db.driver.findMany({ where: { active: true }, select: { id: true, fullName: true, phone: true, active: true, simulated: true, preparationMinutes: true, baseCity: true, baseDepartment: true } }),
       this.db.route.findMany({ where: { status: { in: ['planned', 'in_transit'] } }, select: { driverId: true, vehicleId: true, scheduledDate: true, scheduledEnd: true, status: true } }),
     ]);
     return { vehicles, drivers, reservations };

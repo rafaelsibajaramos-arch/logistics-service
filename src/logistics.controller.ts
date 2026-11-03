@@ -5,6 +5,7 @@ import { CloseDeliveryDto, ConfirmRoadRouteDto, CreateDeliveryPlanDto, CreateDri
 import { LogisticsService } from './logistics.service';
 import { OperationsService } from './operations.service';
 import { SimulationService } from './simulation.service';
+import { AutoPlanRouteDto } from './logistics.dto';
 import { LogisticsAccessService } from './logistics-access.service';
 import { SimulationControlDto, ReceiptAcknowledgementDto } from './logistics.dto';
 
@@ -25,6 +26,7 @@ export class LogisticsController {
   @Patch('deliveries/:id/location') location(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: DeliveryLocationDto, @Req() req: AuthenticatedRequest) { return this.operations.locateDelivery(id, dto, req.user.sub, req.user.roles); }
   @Get('deliveries/:id/tracking') tracking(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: AuthenticatedRequest) { return this.operations.tracking(id, req.user.sub, req.user.roles); }
   @Post('routes/preview') preview(@Body() dto: PlanRoadRouteDto, @Req() req: AuthenticatedRequest) { return this.operations.preview(dto, req.user.sub, req.user.roles); }
+  @Post('routes/auto-plan') autoPlan(@Body() dto: AutoPlanRouteDto, @Req() req: AuthenticatedRequest) { return this.operations.autoPlan(dto.deliveryIds, req.user.sub, req.user.roles); }
   @Post('routes/confirm') confirm(@Body() dto: ConfirmRoadRouteDto, @Req() req: AuthenticatedRequest, @Headers('x-correlation-id') correlation?: string) { return this.operations.confirmProposal(dto.proposalId, req.user.sub, correlation ?? '', req.user.roles); }
   @Patch('routes/:id/cancel') async cancel(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: AuthenticatedRequest) { await this.access.manageRoute(id, req.user.sub, req.user.roles); return this.operations.cancelRoute(id, req.user.sub); }
   @Post('routes/:id/position') position(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: RoutePositionDto, @Req() req: AuthenticatedRequest) { return this.operations.position(id, dto, req.user.sub, req.user.roles); }

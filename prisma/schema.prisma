@@ -61,6 +61,8 @@ model Driver {
   active        Boolean  @default(true)
   simulated     Boolean  @default(false)
   preparationMinutes Int @default(15)
+  baseCity      String? @db.VarChar(80)
+  baseDepartment String? @db.VarChar(80)
   routes        Route[]
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -79,6 +81,11 @@ model Vehicle {
   brand        String?  @db.VarChar(80)
   model        String?  @db.VarChar(80)
   operationalStatus String @default("available") @db.VarChar(30)
+  baseCity      String? @db.VarChar(80)
+  baseDepartment String? @db.VarChar(80)
+  baseAddress   String? @db.VarChar(500)
+  baseLatitude  Float?
+  baseLongitude Float?
   insuranceUntil DateTime? @db.Date
   inspectionUntil DateTime? @db.Date
   costPerKm    Decimal? @db.Decimal(12, 2)
