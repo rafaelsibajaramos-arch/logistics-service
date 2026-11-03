@@ -11,7 +11,9 @@ export class SetActiveDto {
 }
 
 export class CreateDriverDto {
-  @IsUUID() userId!: string;
+  @IsOptional() @IsUUID() userId?: string;
+  @IsOptional() @IsBoolean() simulated?: boolean;
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 0 }) @Min(0) @Max(120) preparationMinutes?: number;
   @IsString() @Length(2, 150) fullName!: string;
   @IsString() @Length(5, 25) phone!: string;
   @IsString() @Length(3, 40) licenseNumber!: string;
@@ -20,8 +22,9 @@ export class CreateDriverDto {
 export class CreateVehicleDto {
   @IsString() @Length(3, 12) plate!: string;
   @Type(() => Number) @IsNumber({ maxDecimalPlaces: 3 }) @Min(0.001) capacityKg!: number;
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 3 }) @Min(0) minimumLoadKg?: number;
   @IsOptional() @IsBoolean() refrigerated?: boolean;
-  @IsOptional() @IsIn(['van', 'truck', 'pickup', 'motorcycle']) kind?: string;
+  @IsOptional() @IsIn(['van', 'truck', 'pickup', 'motorcycle', 'car', 'bicycle', 'cargo_bike']) kind?: string;
   @IsOptional() @IsString() @Length(0, 80) brand?: string;
   @IsOptional() @IsString() @Length(0, 80) model?: string;
   @IsOptional() @IsIn(['available', 'maintenance', 'out_of_service']) operationalStatus?: string;
@@ -35,6 +38,17 @@ export class DeliveryLocationDto {
   @IsNumber() @Min(-180) @Max(180) longitude!: number;
   @IsString() @Length(2, 80) zoneCode!: string;
   @IsOptional() @IsBoolean() requiresColdChain?: boolean;
+  @IsOptional() @IsDateString() pickupReadyAt?: string;
+  @IsOptional() @IsDateString() pickupDeadlineAt?: string;
+}
+export class SimulationControlDto {
+  @IsIn(['start', 'pause', 'resume', 'speed']) action!: string;
+  @IsOptional() @IsNumber() @Min(1) @Max(120) speed?: number;
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 0 }) @Min(10) @Max(300) confirmationDelaySeconds?: number;
+}
+export class ReceiptAcknowledgementDto {
+  @IsString() @Length(2, 150) receivedByName!: string;
+  @IsOptional() @IsString() @Length(0, 1000) receiptNotes?: string;
 }
 export class PlanRoadRouteDto {
   @IsUUID() driverId!: string;

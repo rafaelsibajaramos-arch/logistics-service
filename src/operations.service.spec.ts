@@ -5,7 +5,7 @@ describe('Operación y privacidad de logística', () => {
   it('impide cambiar un destino ajeno', async () => {
     const tx: any = { delivery: { findUnique: jest.fn().mockResolvedValue({ plan: { buyerId: 'other' } }), update: jest.fn() } };
     const db: any = { $transaction: (f: any) => f(tx) };
-    await expect(new OperationsService(db, {} as any).locateDelivery('id', { latitude: 8, longitude: -75, zoneCode: 'N' }, actor, ['buyer'])).rejects.toThrow('No puedes');
+    await expect(new OperationsService(db, {} as any).locateDelivery('id', { latitude: 8, longitude: -75, zoneCode: 'N' }, actor, ['buyer'])).rejects.toThrow('productor responsable');
     expect(tx.delivery.update).not.toHaveBeenCalled();
   });
   it('impide modificar un vehículo comprometido en una ruta', async () => {

@@ -12,10 +12,12 @@ import { OrdersConsumer } from './events/orders.consumer';
 import { OutboxWorker } from './events/outbox.worker';
 import { OperationsService } from './operations.service';
 import { DatabaseConflictFilter } from './database-conflict.filter';
+import { LogisticsAccessService } from './logistics-access.service';
+import { SimulationService } from './simulation.service';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }), JwtModule.register({ global: true }), EventsModule],
   controllers: [LogisticsController, HealthController],
-  providers: [PrismaService, LogisticsService, OperationsService, OrdersConsumer, OutboxWorker, { provide: APP_GUARD, useClass: AuthGuard }, { provide: APP_FILTER, useClass: DatabaseConflictFilter }],
+  providers: [PrismaService, LogisticsAccessService, SimulationService, LogisticsService, OperationsService, OrdersConsumer, OutboxWorker, { provide: APP_GUARD, useClass: AuthGuard }, { provide: APP_FILTER, useClass: DatabaseConflictFilter }],
 })
 export class AppModule {}
