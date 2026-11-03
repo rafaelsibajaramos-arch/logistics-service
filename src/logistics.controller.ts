@@ -5,7 +5,7 @@ import { CloseDeliveryDto, ConfirmRoadRouteDto, CreateDeliveryPlanDto, CreateDri
 import { LogisticsService } from './logistics.service';
 import { OperationsService } from './operations.service';
 import { SimulationService } from './simulation.service';
-import { AutoPlanRouteDto } from './logistics.dto';
+import { AutoPlanRouteDto, DeliveryDispatchDto } from './logistics.dto';
 import { LogisticsAccessService } from './logistics-access.service';
 import { SimulationControlDto, ReceiptAcknowledgementDto } from './logistics.dto';
 
@@ -24,6 +24,7 @@ export class LogisticsController {
   @Patch('vehicles/:id') editVehicle(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: CreateVehicleDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.operations.updateVehicle(id, dto); }
   @Patch('drivers/:id') editDriver(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: CreateDriverDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.operations.updateDriver(id, dto); }
   @Patch('deliveries/:id/location') location(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: DeliveryLocationDto, @Req() req: AuthenticatedRequest) { return this.operations.locateDelivery(id, dto, req.user.sub, req.user.roles); }
+  @Patch('deliveries/:id/dispatch') setDispatchPoint(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: DeliveryDispatchDto, @Req() req: AuthenticatedRequest) { return this.operations.setDispatchPoint(id, dto, req.user.sub, req.user.roles); }
   @Get('deliveries/:id/tracking') tracking(@Param('id', new ParseUUIDPipe()) id: string, @Req() req: AuthenticatedRequest) { return this.operations.tracking(id, req.user.sub, req.user.roles); }
   @Post('routes/preview') preview(@Body() dto: PlanRoadRouteDto, @Req() req: AuthenticatedRequest) { return this.operations.preview(dto, req.user.sub, req.user.roles); }
   @Post('routes/auto-plan') autoPlan(@Body() dto: AutoPlanRouteDto, @Req() req: AuthenticatedRequest) { return this.operations.autoPlan(dto.deliveryIds, req.user.sub, req.user.roles); }

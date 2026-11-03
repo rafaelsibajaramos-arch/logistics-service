@@ -51,6 +51,11 @@ export class DeliveryLocationDto {
   @IsOptional() @IsDateString() pickupReadyAt?: string;
   @IsOptional() @IsDateString() pickupDeadlineAt?: string;
 }
+export class DeliveryDispatchDto {
+  @IsString() @Length(5, 500) address!: string;
+  @Type(() => Number) @IsNumber() @Min(-90) @Max(90) latitude!: number;
+  @Type(() => Number) @IsNumber() @Min(-180) @Max(180) longitude!: number;
+}
 export class SimulationControlDto {
   @IsIn(['start', 'pause', 'resume', 'speed']) action!: string;
   @IsOptional() @IsNumber() @Min(1) @Max(120) speed?: number;

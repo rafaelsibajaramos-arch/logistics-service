@@ -37,4 +37,16 @@ describe('Planificación vial y restricciones de negocio', () => {
     try { await expect(new OsrmClient().matrix([pickup('a', 4)])).rejects.toThrow('No se pudo calcular'); }
     finally { mock.mockRestore(); if (previous) process.env.OSRM_URL = previous; else delete process.env.OSRM_URL; }
   });
+  it('identifica un punto fuera de la red vial sin asignar recorrido', async () => {
+    const previous = process.env.OSRM_URL; process.env.OSRM_URL = 'http://osrm.test';
+    const mock = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: false, json: async () => ({ code: 'NoSegment', message: 'Could not find a matching segment for coordinate 1' }) } as Response);
+    try { await expect(new OsrmClient().matrix([pickup('a', 4)])).rejects.toThrow('no coincide con una carretera'); }
+    finally { mock.mockRestore(); if (previous) process.env.OSRM_URL = previous; else delete process.env.OSRM_URL; }
+  });
+  it('rechaza una salida de mercancía que OSRM ubica lejos de una vía', async () => {
+    const previous = process.env.OSRM_URL; process.env.OSRM_URL = 'http://osrm.test';
+    const mock = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ code: 'Ok', waypoints: [{ distance: 501 }] }) } as Response);
+    try { await expect(new OsrmClient().verifyRoadPoint(pickup('a', 4))).rejects.toThrow('más de 500 m'); }
+    finally { mock.mockRestore(); if (previous) process.env.OSRM_URL = previous; else delete process.env.OSRM_URL; }
+  });
 });

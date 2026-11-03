@@ -65,13 +65,28 @@ export class OsrmClient {
     const coordinates = points.map(p => `${p.longitude.toFixed(6)},${p.latitude.toFixed(6)}`).join(';');
     try {
       const response = await fetch(`${this.endpoint()}/${service}/v1/driving/${coordinates}?${options}&radiuses=${points.map(() => '500').join(';')}`, { signal: AbortSignal.timeout(10000) });
-      if (!response.ok) throw new Error('OSRM HTTP');
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({})) as { code?: string; message?: string };
+        if (failure.code === 'NoSegment') throw new ConflictException('Un punto de recogida, entrega o salida no coincide con una carretera transitable. Confirma su ubicación exacta en el mapa.');
+        throw new Error('OSRM HTTP');
+      }
       const data = await response.json();
       if (data.code !== 'Ok') throw new Error('OSRM result');
       return data;
     } catch (error) {
-      if (error instanceof ServiceUnavailableException) throw error;
+      if (error instanceof ServiceUnavailableException || error instanceof ConflictException) throw error;
       throw new ServiceUnavailableException('No se pudo calcular el recorrido por carretera. Revisa los puntos o reintenta; no se ha asignado la ruta.');
+    }
+  }
+  async verifyRoadPoint(point: Point) {
+    const url = `${this.endpoint()}/nearest/v1/driving/${point.longitude.toFixed(6)},${point.latitude.toFixed(6)}?number=1&radiuses=500`;
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      const data = await response.json() as { code?: string; waypoints?: { distance?: number }[] };
+      if (data.code !== 'Ok' || !Number.isFinite(data.waypoints?.[0]?.distance) || Number(data.waypoints?.[0]?.distance) > 500) throw new ConflictException('El punto está a más de 500 m de una vía transitable. Ajusta el marcador a la entrada por carretera.');
+    } catch (error) {
+      if (error instanceof ConflictException) throw error;
+      throw new ServiceUnavailableException('No se pudo verificar el acceso vial de la recogida. Reintenta.');
     }
   }
   async matrix(points: Point[]): Promise<(number | null)[][]> {

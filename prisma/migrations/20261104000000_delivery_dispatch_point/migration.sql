@@ -1,0 +1,2 @@
+ALTER TABLE "deliveries" ADD COLUMN "dispatchAddress" VARCHAR(500), ADD COLUMN "dispatchLatitude" DOUBLE PRECISION, ADD COLUMN "dispatchLongitude" DOUBLE PRECISION;
+ALTER TABLE "deliveries" ADD CONSTRAINT "delivery_dispatch_point_complete" CHECK (("dispatchAddress" IS NULL AND "dispatchLatitude" IS NULL AND "dispatchLongitude" IS NULL) OR ("dispatchAddress" IS NOT NULL AND "dispatchLatitude" BETWEEN -90 AND 90 AND "dispatchLongitude" BETWEEN -180 AND 180));

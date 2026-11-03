@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from './prisma.service';
 import { LogisticsService } from './logistics.service';
-import { CreateDriverDto, CreateVehicleDto, DeliveryLocationDto, PlanRoadRouteDto, RouteIncidentDto, RoutePositionDto } from './logistics.dto';
+import { CreateDriverDto, CreateVehicleDto, DeliveryDispatchDto, DeliveryLocationDto, PlanRoadRouteDto, RouteIncidentDto, RoutePositionDto } from './logistics.dto';
 import { OsrmClient, planningFingerprint, ProposalPayload, RoadStop, scheduleStops, sequenceStops } from './road-planner';
 import { LogisticsAccessService } from './logistics-access.service';
 import { simulationElapsed, simulationProgress, SimulationTimeline } from './simulation-engine';
@@ -49,10 +49,23 @@ export class OperationsService {
       if (ready && ready >= delivery.windowEnd || deadline && deadline > delivery.windowEnd) throw new BadRequestException('La recogida debe caber en la ventana de entrega');
       if (dto.requiresColdChain != null && !admin(roles)) throw new ForbiddenException('Solo logística establece el requisito de refrigeración');
       if (delivery.routeId || delivery.status !== 'scheduled') throw new ConflictException('El destino ya está asignado a una ruta y no puede cambiarse');
-      const zone = await tx.zone.findUnique({ where: { code: dto.zoneCode.trim().toUpperCase() } });
+      const code = dto.zoneCode.trim().toUpperCase();
+      const zone = code === 'AUTO' ? await tx.zone.upsert({ where: { code: 'AUTO' }, create: { code: 'AUTO', name: 'Distribución automática' }, update: {} }) : await tx.zone.findUnique({ where: { code } });
       if (!zone?.active) throw new BadRequestException('Selecciona una zona activa');
       return tx.delivery.update({ where: { id }, data: { latitude: dto.latitude, longitude: dto.longitude, zoneCode: zone.code, requiresColdChain: dto.requiresColdChain ?? delivery.requiresColdChain, locationConfirmedAt: new Date(), ...(dto.pickupReadyAt ? { pickupReadyAt: new Date(dto.pickupReadyAt) } : {}), ...(dto.pickupDeadlineAt ? { pickupDeadlineAt: new Date(dto.pickupDeadlineAt) } : {}) } });
     }, { isolationLevel: 'Serializable' });
+  }
+
+  async setDispatchPoint(id: string, dto: DeliveryDispatchDto, actorId: string, roles: string[]) {
+    await this.access.manageDeliveries([id], actorId, roles);
+    const delivery = await this.db.delivery.findUnique({ where: { id }, include: { lots: true } });
+    if (!delivery) throw new NotFoundException('Entrega no encontrada');
+    if (delivery.routeId || delivery.status !== 'scheduled') throw new ConflictException('El punto de recogida ya no se puede cambiar');
+    if (new Set(delivery.lots.map(l => l.farmId)).size !== 1) throw new ConflictException('Esta entrega reúne varias fincas. Administración debe coordinar sus recogidas por separado');
+    await new OsrmClient().verifyRoadPoint({ latitude: dto.latitude, longitude: dto.longitude });
+    const updated = await this.db.delivery.updateMany({ where: { id, routeId: null, status: 'scheduled' }, data: { dispatchAddress: dto.address.trim(), dispatchLatitude: dto.latitude, dispatchLongitude: dto.longitude } });
+    if (!updated.count) throw new ConflictException('La entrega cambió mientras confirmabas la recogida');
+    return this.db.delivery.findUniqueOrThrow({ where: { id } });
   }
 
   async autoPlan(ids: string[], actorId: string, roles: string[]) {
@@ -60,7 +73,7 @@ export class OperationsService {
     await this.access.manageDeliveries(ids, actorId, roles);
     const deliveries = await this.db.delivery.findMany({ where: { id: { in: ids } }, include: { lots: true } });
     if (deliveries.length !== ids.length || deliveries.some(d => d.status !== 'scheduled' || d.routeId)) throw new ConflictException('Una entrega ya está asignada o cerrada. Actualiza la lista');
-    if (deliveries.some(d => d.latitude == null || d.longitude == null || d.lots.some(l => l.pickupLatitude == null || l.pickupLongitude == null))) throw new ConflictException('Confirma la dirección en el mapa del comprador y la ubicación de las fincas antes de asignar');
+    if (deliveries.some(d => d.latitude == null || d.longitude == null || d.lots.some(l => l.pickupLatitude == null || l.pickupLongitude == null))) throw new ConflictException('Confirma la dirección del comprador y el punto de recogida antes de asignar');
     const total = deliveries.reduce((n,d) => n + d.lots.reduce((sum,l) => sum + Number(l.quantityKg), 0), 0);
     const largest = Math.max(...deliveries.map(d => d.lots.reduce((n,l) => n + Number(l.quantityKg), 0)));
     const cold = deliveries.some(d => d.requiresColdChain);
@@ -69,7 +82,7 @@ export class OperationsService {
       this.db.vehicle.findMany({ where: { active: true, operationalStatus: 'available', capacityKg: { gte: largest }, minimumLoadKg: { lte: total }, ...(cold ? { refrigerated: true } : {}) }, orderBy: { capacityKg: 'asc' } }),
     ]);
     if (!drivers.length || !fleet.length) throw new ConflictException('No hay repartidores simulados o vehículos compatibles. Revisa la flota o divide la carga');
-    const pickup = deliveries[0].lots[0];
+    const pickup = { pickupLatitude: deliveries[0].dispatchLatitude ?? deliveries[0].lots[0].pickupLatitude, pickupLongitude: deliveries[0].dispatchLongitude ?? deliveries[0].lots[0].pickupLongitude };
     const candidates = fleet.filter(v => v.baseAddress?.trim() && v.baseLatitude != null && v.baseLongitude != null && cityKey(v.baseCity, v.baseDepartment) && drivers.some(d => cityKey(d.baseCity, d.baseDepartment) === cityKey(v.baseCity, v.baseDepartment))).sort((a,b) => {
       const distance = (v: typeof a) => meters([Number(v.baseLongitude), Number(v.baseLatitude)], [Number(pickup.pickupLongitude), Number(pickup.pickupLatitude)]);
       return Math.floor(distance(a) / 1000) - Math.floor(distance(b) / 1000) || Number(Number(a.capacityKg) < total) - Number(Number(b.capacityKg) < total) || Number(a.capacityKg) - Number(b.capacityKg);
@@ -102,6 +115,11 @@ export class OperationsService {
 
   async preview(dto: PlanRoadRouteDto, actorId: string, roles: string[] = ['admin']) {
     await this.access.manageDeliveries(dto.deliveryIds, actorId, roles);
+    if (dto.zoneCode.trim().toUpperCase() === 'AUTO') {
+      const automatic = await this.db.zone.upsert({ where: { code: 'AUTO' }, create: { code: 'AUTO', name: 'Distribución automática' }, update: {} });
+      if (!automatic.active) throw new ConflictException('Administración deshabilitó la distribución automática');
+      await this.db.delivery.updateMany({ where: { id: { in: dto.deliveryIds }, status: 'scheduled', routeId: null, latitude: { not: null }, longitude: { not: null } }, data: { zoneCode: 'AUTO', locationConfirmedAt: new Date() } });
+    }
     const starts = new Date(dto.scheduledDate), ends = new Date(dto.scheduledEnd);
     if (starts <= new Date() || ends <= starts || ends.getTime() - starts.getTime() > 48 * 3600000) throw new BadRequestException('Planifica un horario futuro de hasta 48 horas');
     if (new Set(dto.deliveryIds).size !== dto.deliveryIds.length) throw new BadRequestException('No repitas entregas');
@@ -126,7 +144,7 @@ export class OperationsService {
       const farms = [...new Set(d.lots.map(l => l.farmId))];
       for (const farmId of farms) {
         const lots = d.lots.filter(l => l.farmId === farmId), lot = lots[0];
-        stops.push({ deliveryId: d.id, farmId, type: 'pickup', address: lot.pickupAddress, latitude: Number(lot.pickupLatitude), longitude: Number(lot.pickupLongitude), kg: lots.reduce((n, l) => n + Number(l.quantityKg), 0), earliest: Math.max(starts.getTime(), d.pickupReadyAt?.getTime() ?? 0), latest: Math.min(d.windowEnd.getTime(), d.pickupDeadlineAt?.getTime() ?? Infinity) });
+        stops.push({ deliveryId: d.id, farmId, type: 'pickup', address: d.dispatchAddress ?? lot.pickupAddress, latitude: d.dispatchLatitude ?? Number(lot.pickupLatitude), longitude: d.dispatchLongitude ?? Number(lot.pickupLongitude), kg: lots.reduce((n, l) => n + Number(l.quantityKg), 0), earliest: Math.max(starts.getTime(), d.pickupReadyAt?.getTime() ?? 0), latest: Math.min(d.windowEnd.getTime(), d.pickupDeadlineAt?.getTime() ?? Infinity) });
       }
       stops.push({ deliveryId: d.id, type: 'dropoff', address: d.deliveryAddress, latitude: d.latitude!, longitude: d.longitude!, kg: d.lots.reduce((n, l) => n + Number(l.quantityKg), 0), earliest: d.windowStart.getTime(), latest: d.windowEnd.getTime() });
     }

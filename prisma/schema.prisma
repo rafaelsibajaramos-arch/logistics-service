@@ -159,6 +159,9 @@ model Delivery {
   receiptNotes        String? @db.VarChar(1000)
   pickupReadyAt       DateTime?
   pickupDeadlineAt    DateTime?
+  dispatchAddress     String? @db.VarChar(500)
+  dispatchLatitude    Float?
+  dispatchLongitude   Float?
   transportCompletedAt DateTime?
   buyerConfirmedAt    DateTime?
   completionSource    String? @db.VarChar(30)
