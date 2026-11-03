@@ -55,7 +55,7 @@ export class LogisticsService {
       select: { id: true, driverId: true, scheduledDate: true, status: true, distanceMeters: true, driverPayPerDelivery: true, driverPayPerKm: true,
         driver: { select: { fullName: true, simulated: true } }, vehicle: { select: { plate: true } },
         deliveries: { select: { status: true } } },
-      orderBy: { scheduledDate: 'desc' }, take: 500,
+      orderBy: { scheduledDate: 'desc' },
     });
     return routes.map(route => {
       const payable = route.deliveries.filter(delivery => ['completed', 'partial'].includes(delivery.status)).length;
