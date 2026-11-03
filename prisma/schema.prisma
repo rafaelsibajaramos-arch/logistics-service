@@ -61,8 +61,8 @@ model Driver {
   active        Boolean  @default(true)
   simulated     Boolean  @default(false)
   preparationMinutes Int @default(15)
-  payPerDelivery Decimal @default(5000) @db.Decimal(12, 2)
-  payPerKm Decimal @default(0) @db.Decimal(12, 2)
+  payPerDelivery Decimal @default(12000) @db.Decimal(12, 2)
+  payPerKm Decimal @default(650) @db.Decimal(12, 2)
   baseCity      String? @db.VarChar(80)
   baseDepartment String? @db.VarChar(80)
   routes        Route[]
