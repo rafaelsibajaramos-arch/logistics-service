@@ -43,6 +43,7 @@ export class LogisticsController {
   @Post('logistics/zones') createZone(@Body() dto: CreateZoneDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.createZone(dto); }
   @Patch('logistics/zones/:code/active') setZoneActive(@Param('code') code: string, @Body() dto: SetActiveDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.setZoneActive(code, dto.active); }
   @Get('drivers') drivers(@Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.listDrivers(); }
+  @Get('drivers/earnings') earnings(@Req() req: AuthenticatedRequest) { return this.service.driverEarnings(req.user.sub, req.user.roles); }
   @Post('drivers') createDriver(@Body() dto: CreateDriverDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.createDriver(dto); }
   @Patch('drivers/:id/active') setDriverActive(@Param('id', new ParseUUIDPipe()) id: string, @Body() dto: SetActiveDto, @Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.setDriverActive(id, dto.active); }
   @Get('vehicles') vehicles(@Req() req: AuthenticatedRequest) { this.requireAdmin(req); return this.service.listVehicles(); }

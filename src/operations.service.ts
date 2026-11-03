@@ -297,7 +297,8 @@ export class OperationsService {
   async producerRoutes(userId: string, roles: string[]) {
     const producerId = await this.access.producerId(userId, roles);
     if (!producerId) throw new ForbiddenException('No hay un perfil productor habilitado');
-    return this.db.route.findMany({ where: { deliveries: { some: { lots: { some: { producerId } } }, every: { lots: { every: { producerId } } } } }, include: { driver: true, vehicle: true, simulation: true, zone: true, activities: { orderBy: { createdAt: 'desc' }, take: 30 }, stops: { orderBy: { sequence: 'asc' } }, deliveries: { include: { plan: true, lots: true } } }, orderBy: { createdAt: 'desc' }, take: 100 });
+    const routes = await this.db.route.findMany({ where: { deliveries: { some: { lots: { some: { producerId } } }, every: { lots: { every: { producerId } } } } }, include: { driver: { select: { id: true, userId: true, fullName: true, phone: true, simulated: true, active: true } }, vehicle: true, simulation: true, zone: true, activities: { orderBy: { createdAt: 'desc' }, take: 30 }, stops: { orderBy: { sequence: 'asc' } }, deliveries: { include: { plan: true, lots: true } } }, orderBy: { createdAt: 'desc' }, take: 100 });
+    return routes.map(({ driverPayPerDelivery: rateDelivery, driverPayPerKm: rateKm, ...route }) => { void rateDelivery; void rateKm; return route; });
   }
   async resources(userId: string, roles: string[]) {
     if (!admin(roles) && !await this.access.producerId(userId, roles)) throw new ForbiddenException('Solo administración o productores habilitados');

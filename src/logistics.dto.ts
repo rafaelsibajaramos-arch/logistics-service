@@ -16,6 +16,8 @@ export class CreateDriverDto {
   @IsOptional() @IsUUID() userId?: string;
   @IsOptional() @IsBoolean() simulated?: boolean;
   @IsOptional() @IsNumber({ maxDecimalPlaces: 0 }) @Min(0) @Max(120) preparationMinutes?: number;
+  @IsOptional() @Type(() => Number) @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(1000000) payPerDelivery?: number;
+  @IsOptional() @Type(() => Number) @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(1000000) payPerKm?: number;
   @IsString() @Length(2, 150) fullName!: string;
   @IsString() @Length(5, 25) phone!: string;
   @IsString() @Length(3, 40) licenseNumber!: string;

@@ -47,6 +47,29 @@ export class LogisticsService {
   }
 
   listDrivers() { return this.db.driver.findMany({ orderBy: [{ active: 'desc' }, { fullName: 'asc' }] }); }
+  async driverEarnings(userId: string, roles: string[]) {
+    const admin = roles.some(role => ['admin', 'logistics_admin'].includes(role));
+    if (!admin && !roles.includes('driver')) throw new ForbiddenException('No tienes acceso a las ganancias de repartidores');
+    const routes = await this.db.route.findMany({
+      where: admin ? undefined : { driver: { userId } },
+      select: { id: true, driverId: true, scheduledDate: true, status: true, distanceMeters: true, driverPayPerDelivery: true, driverPayPerKm: true,
+        driver: { select: { fullName: true, simulated: true } }, vehicle: { select: { plate: true } },
+        deliveries: { select: { status: true } } },
+      orderBy: { scheduledDate: 'desc' }, take: 500,
+    });
+    return routes.map(route => {
+      const payable = route.deliveries.filter(delivery => ['completed', 'partial'].includes(delivery.status)).length;
+      const configured = route.driverPayPerDelivery != null && route.driverPayPerKm != null;
+      const total = configured && route.status === 'completed' && payable > 0
+        ? route.driverPayPerDelivery!.mul(payable).plus(route.driverPayPerKm!.mul(new Prisma.Decimal(route.distanceMeters ?? 0).div(1000))).toDecimalPlaces(2)
+        : new Prisma.Decimal(0);
+      return { routeId: route.id, driverId: route.driverId, driverName: route.driver.fullName, simulated: route.driver.simulated,
+        plate: route.vehicle.plate, scheduledDate: route.scheduledDate, status: route.status, deliveries: route.deliveries.length,
+        completedDeliveries: payable, distanceKm: Number(new Prisma.Decimal(route.distanceMeters ?? 0).div(1000).toDecimalPlaces(2)),
+        ratePerDelivery: route.driverPayPerDelivery, ratePerKm: route.driverPayPerKm, amount: total.toString(),
+        tariffConfigured: configured };
+    });
+  }
   async createDriver(dto: CreateDriverDto) {
     if (!dto.simulated && !dto.userId) throw new BadRequestException('Un conductor real necesita una cuenta de acceso');
     try { return await this.db.driver.create({ data: { ...dto, userId: dto.simulated ? randomUUID() : dto.userId!, fullName: dto.fullName.trim(), phone: dto.phone.trim(), licenseNumber: dto.licenseNumber.trim().toUpperCase() } }); }
@@ -210,6 +233,7 @@ export class LogisticsService {
 
       const route = await tx.route.create({ data: {
         driverId: driver.id, vehicleId: vehicle.id, zoneCode: zone.code, scheduledDate: startsAt, scheduledEnd: endsAt,
+        driverPayPerDelivery: driver.payPerDelivery, driverPayPerKm: driver.payPerKm,
         ...(proposal ? { roadPlan: JSON.parse(JSON.stringify(proposal.data)), calculatedAt: new Date(proposal.data.calculatedAt), distanceMeters: proposal.data.distance, durationSeconds: proposal.data.duration, peakLoadKg: proposal.data.peakLoadKg, estimatedCost: proposal.data.estimatedCost } : {}),
         ...(proposal ? { activities: { create: { actorId: proposal.actorId, operationId: randomUUID(), kind: 'access_reviewed', message: 'El planificador confirmó la revisión de restricciones de acceso del vehículo antes de asignar la ruta.' } } } : {}),
         deliveries: { connect: deliveries.map(({ id }) => ({ id })) },

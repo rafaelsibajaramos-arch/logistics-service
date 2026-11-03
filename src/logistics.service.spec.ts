@@ -1,6 +1,29 @@
 import { CreateDeliveryPlanDto } from './logistics.dto';
 import { EventEnvelope } from './events/event-envelope';
 import { LogisticsService } from './logistics.service';
+import { Prisma } from '@prisma/client';
+
+describe('Ganancias de repartidores', () => {
+  const userId = '11111111-1111-4111-8111-111111111111';
+  const routes = [{ id: 'r1', driverId: 'd1', scheduledDate: new Date(), status: 'completed', distanceMeters: 12500,
+    driverPayPerDelivery: new Prisma.Decimal(5000), driverPayPerKm: new Prisma.Decimal(200),
+    driver: { fullName: 'Ana', simulated: true }, vehicle: { plate: 'ABC123' },
+    deliveries: [{ status: 'completed' }, { status: 'partial' }, { status: 'failed' }] },
+  { id: 'r2', driverId: 'd1', scheduledDate: new Date(), status: 'cancelled', distanceMeters: 1000,
+    driverPayPerDelivery: new Prisma.Decimal(5000), driverPayPerKm: new Prisma.Decimal(200),
+    driver: { fullName: 'Ana', simulated: true }, vehicle: { plate: 'ABC123' }, deliveries: [{ status: 'completed' }] }];
+  it('suma entregas aceptadas y distancia solamente al terminar la ruta', async () => {
+    const db: any = { route: { findMany: jest.fn().mockResolvedValue(routes) } };
+    const result = await new LogisticsService(db).driverEarnings(userId, ['driver']);
+    expect(result.map(row => row.amount)).toEqual(['12500', '0']);
+    expect(db.route.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { driver: { userId } } }));
+  });
+  it('rechaza a un comprador', async () => {
+    const db: any = { route: { findMany: jest.fn() } };
+    await expect(new LogisticsService(db).driverEarnings(userId, ['buyer'])).rejects.toThrow();
+    expect(db.route.findMany).not.toHaveBeenCalled();
+  });
+});
 
 const orderId = 'da3b2a36-6633-4a18-9b6a-9ebad49c7158';
 const event: EventEnvelope = {
